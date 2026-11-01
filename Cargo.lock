@@ -982,6 +982,7 @@ dependencies = [
  "chrono",
  "driver-core",
  "fallible-iterator 0.2.0",
+ "futures",
  "native-tls",
  "postgres-native-tls",
  "postgres-protocol",

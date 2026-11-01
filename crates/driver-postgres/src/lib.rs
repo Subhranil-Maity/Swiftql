@@ -7,8 +7,10 @@ mod dialect;
 mod driver;
 mod error;
 mod introspect;
+mod sql;
 mod stream;
 mod tls;
+mod tx;
 mod types;
 
 pub use driver::PgDriver;

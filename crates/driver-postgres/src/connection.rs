@@ -12,10 +12,19 @@ use driver_core::{
 use tokio_postgres::{
     Client, NoTls, Socket,
     tls::{MakeTlsConnect, TlsConnect},
+    types::ToSql,
 };
 
 use crate::{
-    cancel::PgCancel, capabilities, dialect::PgDialect, error::map_err, introspect, tls::PgTls,
+    cancel::PgCancel,
+    capabilities,
+    dialect::PgDialect,
+    error::map_err,
+    introspect, sql,
+    stream::PgRowStream,
+    tls::PgTls,
+    tx::{self, TxCommand, TxState},
+    types::column_meta,
 };
 
 /// Oldest supported server (server_version_num of PostgreSQL 10.0).
@@ -29,6 +38,7 @@ pub struct PgConnection {
     pub(crate) tls: PgTls,                 // reused for cancel requests
     /// Why the background connection task stopped, if it failed.
     pub(crate) closed: Arc<Mutex<Option<DbError>>>,
+    pub(crate) tx: TxState,
 }
 
 impl PgConnection {
@@ -47,6 +57,7 @@ impl PgConnection {
             version,
             tls,
             closed,
+            tx: Arc::new(Mutex::new(TxStatus::Idle)),
         })
     }
 
@@ -61,6 +72,67 @@ impl PgConnection {
     /// A call that failed because the connection died reports why it died.
     fn with_cause<T>(&self, result: DbResult<T>) -> DbResult<T> {
         result.map_err(|err| self.closed_error().unwrap_or(err))
+    }
+
+    /// Server errors abort an open transaction. Errors made on our side
+    /// (no SQLSTATE, e.g. Unsupported) never reached the server and don't.
+    fn track<T>(&self, command: TxCommand, result: &DbResult<T>) {
+        match result {
+            Ok(_) => tx::after_success(&self.tx, command),
+            Err(err) if err.code.is_some() => tx::after_error(&self.tx, command),
+            Err(_) => {}
+        }
+    }
+
+    async fn run(&self, sql: &str) -> DbResult<ExecOutcome> {
+        let statement = self.client.prepare(sql).await.map_err(|err| {
+            let err = map_err(err);
+            if is_multi_statement(&err) {
+                DbError {
+                    kind: ErrorKind::Unsupported,
+                    message:
+                        "multiple statements are not supported yet; run one statement at a time"
+                            .into(),
+                    ..err
+                }
+            } else {
+                err
+            }
+        })?;
+        if !statement.params().is_empty() {
+            return Err(DbError::new(
+                ErrorKind::Unsupported,
+                "TODO: query parameters ($1, $2, ...) are not supported yet",
+            ));
+        }
+
+        if statement.columns().is_empty() {
+            let rows = self
+                .client
+                .execute(&statement, &[])
+                .await
+                .map_err(map_err)?;
+            return Ok(ExecOutcome::Affected {
+                rows,
+                command: sql::command_tag(sql),
+            });
+        }
+
+        let columns = statement.columns().iter().map(column_meta).collect();
+        let no_params = std::iter::empty::<&(dyn ToSql + Sync)>();
+        let rows = self
+            .client
+            .query_raw(&statement, no_params)
+            .await
+            .map_err(map_err)?;
+        let cancel = PgCancel {
+            token: self.client.cancel_token(),
+            tls: self.tls.clone(),
+        };
+        Ok(ExecOutcome::Rows {
+            columns,
+            stream: Box::new(PgRowStream::new(rows, cancel, Arc::clone(&self.tx))),
+        })
     }
 
     fn closed_error(&self) -> Option<DbError> {
@@ -93,6 +165,12 @@ where
         }
     });
     Ok((client, closed))
+}
+
+/// The server refuses to prepare "SELECT 1; SELECT 2".
+/// TODO: the message is localized (lc_messages); only English is recognised.
+fn is_multi_statement(err: &DbError) -> bool {
+    err.code.as_deref() == Some("42601") && err.message.contains("multiple commands")
 }
 
 async fn server_version(client: &Client) -> DbResult<ServerVersion> {
@@ -138,12 +216,16 @@ impl Connection for PgConnection {
     }
 
     fn tx_status(&self) -> TxStatus {
-        todo!("track BEGIN / COMMIT / ROLLBACK and failed statements")
+        tx::get(&self.tx)
     }
 
-    async fn execute(&self, _sql: &str) -> DbResult<ExecOutcome> {
-        // TODO: prepare; has columns → Rows (PgRowStream), else Affected
-        todo!()
+    /// One statement. Returns rows if it has columns (SELECT, ... RETURNING),
+    /// otherwise the affected row count.
+    async fn execute(&self, sql: &str) -> DbResult<ExecOutcome> {
+        self.check_open()?;
+        let result = self.run(sql).await;
+        self.track(TxCommand::of(sql), &result);
+        self.with_cause(result)
     }
 
     fn cancel_handle(&self) -> Box<dyn CancelHandle> {
@@ -156,12 +238,14 @@ impl Connection for PgConnection {
     async fn introspect(&self, scope: IntrospectScope) -> DbResult<SchemaSnapshot> {
         self.check_open()?;
         let result = introspect::introspect(&self.client, &self.version, scope).await;
+        self.track(TxCommand::Other, &result); // runs inside the user's open transaction
         self.with_cause(result)
     }
 
     async fn ping(&self) -> DbResult<()> {
         self.check_open()?;
         let result = self.client.simple_query("SELECT 1").await.map_err(map_err);
+        self.track(TxCommand::Other, &result);
         self.with_cause(result).map(|_| ())
     }
 

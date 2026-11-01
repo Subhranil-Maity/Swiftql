@@ -9,6 +9,7 @@ base64 = "0.23.1"
 chrono = "0.4.45"
 driver-core = { version = "0.1.0", path = "../driver-core" }
 fallible-iterator = "0.2"
+futures = "0.3.34"
 native-tls = "0.2.18"
 postgres-native-tls = "0.5.3"
 postgres-protocol = "0.6.12"

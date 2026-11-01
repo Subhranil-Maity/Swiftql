@@ -33,7 +33,7 @@ pub fn static_capabilities() -> Capabilities {
         server_notices: false,       // TODO: no notice API in driver-core yet
         listen_notify: false,        // TODO: no LISTEN/NOTIFY API in driver-core yet
         parameters: false,           // TODO: no execute_params on Connection yet
-        streaming_cursor: true,
+        streaming_cursor: false, // TODO: rows are streamed without cursor paging (see stream.rs)
 
         // Analysis
         explain: ExplainSupport::JsonWithAnalyze,
