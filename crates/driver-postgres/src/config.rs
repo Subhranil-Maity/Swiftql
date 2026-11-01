@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use driver_core::{
     connect::{Auth, ConnectConfig, Secret, SslMode, Target, TlsConfig},
@@ -8,6 +8,9 @@ use driver_core::{
 use tokio_postgres::config::SslMode as PgSslMode;
 
 const DEFAULT_PORT: u16 = 5432;
+// TODO: take the timeout from the app's global config, passed down from the main application
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const APPLICATION_NAME: &str = "Swiftql";
 
 /// postgres://user:pass@host:port/db?sslmode=... → ConnectConfig
 pub fn parse_url(url: &str) -> DbResult<ConnectConfig> {
@@ -120,6 +123,9 @@ pub fn to_pg_config(config: &ConnectConfig) -> DbResult<tokio_postgres::Config> 
         // certificate checks for VerifyCa / VerifyFull happen in the TLS connector
         SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => PgSslMode::Require,
     });
+
+    pg.connect_timeout(CONNECT_TIMEOUT); // TODO: from global app config (see CONNECT_TIMEOUT)
+    pg.application_name(APPLICATION_NAME); // shown in pg_stat_activity
 
     if config.tunnel.is_some() {
         return Err(unsupported("TODO: SSH tunnels not supported yet"));

@@ -8,7 +8,7 @@ use driver_core::{
     driver::Driver,
 };
 
-use crate::{capabilities, config, tls};
+use crate::{capabilities, config, connection::PgConnection, tls};
 
 const IMAGE_BYTES: &[u8] = include_bytes!("../../../assets/postgresql.svg");
 
@@ -62,10 +62,8 @@ impl Driver for PgDriver {
     }
 
     async fn connect(&self, config: &ConnectConfig) -> DbResult<Box<dyn Connection>> {
-        let _pg_config = config::to_pg_config(config)?;
-        let _tls = tls::make_tls(&config.tls)?;
-        // TODO: connect with tls, tokio::spawn the connection future,
-        // read server_version, build PgConnection
-        todo!()
+        let pg_config = config::to_pg_config(config)?;
+        let tls = tls::make_tls(&config.tls)?;
+        Ok(Box::new(PgConnection::open(&pg_config, tls).await?))
     }
 }

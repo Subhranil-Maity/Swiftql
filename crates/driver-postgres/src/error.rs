@@ -30,7 +30,12 @@ pub fn map_err(err: tokio_postgres::Error) -> DbError {
         None if err.is_closed() => ErrorKind::Network,
         None => ErrorKind::Internal,
     };
-    DbError::new(kind, err.to_string())
+    // Display only gives the category ("error connecting to server"); the cause is in source()
+    let message = match err.source() {
+        Some(cause) => format!("{err}: {cause}"),
+        None => err.to_string(),
+    };
+    DbError::new(kind, message)
 }
 
 /// SQLSTATE → ErrorKind. Specific codes first, then the two-character class.
