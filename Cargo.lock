@@ -977,11 +977,18 @@ dependencies = [
 name = "driver-postgres"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
  "driver-core",
+ "fallible-iterator 0.2.0",
  "native-tls",
  "postgres-native-tls",
  "postgres-protocol",
+ "serde_json",
+ "tokio",
  "tokio-postgres",
+ "uuid",
 ]
 
 [[package]]
