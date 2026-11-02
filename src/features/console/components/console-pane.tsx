@@ -8,9 +8,11 @@ import type { ConsoleTab } from "@/features/console/model/tab";
 /** One tab's body: the editor on top, the output below, split by a draggable handle. */
 export function ConsolePane({
   tab,
+  driverId,
   onSqlChange,
 }: {
   tab: ConsoleTab;
+  driverId: string;
   onSqlChange: (sql: string) => void;
 }) {
   // Shared by every tab and remembered in localStorage: it's a UI preference, not tab data.
@@ -23,7 +25,7 @@ export function ConsolePane({
       onLayoutChanged={layout.onLayoutChanged}
     >
       <ResizablePanel id="editor" defaultSize="50" minSize="20">
-        <SqlEditor value={tab.sql} onChange={onSqlChange} label={tab.title} />
+        <SqlEditor value={tab.sql} onChange={onSqlChange} label={tab.title} driverId={driverId} />
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel id="output" defaultSize="50" minSize="15">

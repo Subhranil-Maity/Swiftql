@@ -26,6 +26,7 @@ export function WorkspacePage({ session }: { session: SessionInfo }) {
         <ConsoleView
           key={session.connectionId}
           connectionId={session.connectionId}
+          driverId={session.driverId}
           color={connection?.color}
         />
       </SidebarInset>

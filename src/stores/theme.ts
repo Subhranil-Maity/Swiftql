@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from "react";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
@@ -21,9 +22,24 @@ export const useThemeStore = create<ThemeState>()(
 
 const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
+function resolveDark(theme: Theme): boolean {
+  return theme === "dark" || (theme === "system" && darkQuery.matches);
+}
+
 function applyTheme(theme: Theme) {
-  const isDark = theme === "dark" || (theme === "system" && darkQuery.matches);
-  document.documentElement.classList.toggle("dark", isDark);
+  document.documentElement.classList.toggle("dark", resolveDark(theme));
+}
+
+function subscribeOsTheme(onChange: () => void) {
+  darkQuery.addEventListener("change", onChange);
+  return () => darkQuery.removeEventListener("change", onChange);
+}
+
+/** Whether the app is showing dark mode, following the OS when the theme is "system". */
+export function useIsDark(): boolean {
+  const theme = useThemeStore((s) => s.theme);
+  const osDark = useSyncExternalStore(subscribeOsTheme, () => darkQuery.matches);
+  return theme === "dark" || (theme === "system" && osDark);
 }
 
 /** Keeps the `.dark` class on <html> in sync with the store and the OS setting. */

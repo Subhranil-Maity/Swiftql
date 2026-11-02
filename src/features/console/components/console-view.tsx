@@ -13,9 +13,12 @@ import { colorVar } from "@/features/connections/model/colors";
 /** The tabbed SQL console for one connection. */
 export function ConsoleView({
   connectionId,
+  driverId,
   color,
 }: {
   connectionId: string;
+  /** Session's driver; picks the editor's SQL dialect and syntax checker. */
+  driverId: string;
   /** Connection colour; marks the active tab. */
   color: string | null | undefined;
 }) {
@@ -63,7 +66,11 @@ export function ConsoleView({
       />
       {tabSet.tabs.map((tab) => (
         <TabsContent key={tab.id} value={tab.id} className="min-h-0">
-          <ConsolePane tab={tab} onSqlChange={(sql) => actions.setSql(tab.id, sql)} />
+          <ConsolePane
+            tab={tab}
+            driverId={driverId}
+            onSqlChange={(sql) => actions.setSql(tab.id, sql)}
+          />
         </TabsContent>
       ))}
       <CloseTabDialog
