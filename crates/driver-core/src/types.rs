@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnMeta {
     pub name: String,
@@ -10,6 +11,7 @@ pub struct ColumnMeta {
     pub source_table: Option<TableRef>, // enables editing results later
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", content = "of", rename_all = "camelCase")]
 pub enum LogicalType {
     Bool,
@@ -35,6 +37,7 @@ pub enum LogicalType {
     Other,                   // anything unmapped: shown as text, never crashes
 }
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct TableRef {
     pub schema: String, // "public"

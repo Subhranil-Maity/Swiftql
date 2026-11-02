@@ -10,6 +10,7 @@ use crate::error::{ConfigError, ConfigResult};
 pub const SERVICE: &str = "dev.swiftql";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum SecretKind {
     DbPassword,
@@ -107,6 +108,7 @@ impl SecretBackend for KeyringBackend {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct KeyringStatus {
     pub available: bool,

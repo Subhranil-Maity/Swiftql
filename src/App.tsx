@@ -1,50 +1,63 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useEffect } from "react";
+
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { ConnectionPage } from "@/pages/connection-page";
+import { SettingsPage } from "@/pages/settings-page";
+import { WelcomePage } from "@/pages/welcome";
+import { WorkspacePage } from "@/pages/workspace";
+import { useConnectionsStore } from "@/stores/connections";
+import { useDriversStore } from "@/stores/drivers";
+import { useHealthStore } from "@/stores/health";
+import { useNavigationStore } from "@/stores/navigation";
+import { useSessionsStore } from "@/stores/sessions";
+import { useSettingsStore } from "@/stores/settings";
+
+/** Loads app data once, then runs the startup health checks. */
+function useStartup() {
+  const loadConnections = useConnectionsStore((s) => s.load);
+  const loadDrivers = useDriversStore((s) => s.load);
+  const loadSettings = useSettingsStore((s) => s.load);
+  const connectionsLoaded = useConnectionsStore((s) => s.loaded);
+  const settingsLoaded = useSettingsStore((s) => s.settings !== null);
+  const checkRecent = useHealthStore((s) => s.checkRecent);
+
+  useEffect(() => {
+    void loadConnections();
+    void loadDrivers();
+    void loadSettings();
+  }, [loadConnections, loadDrivers, loadSettings]);
+
+  // checkRecent runs once per launch however often this fires.
+  useEffect(() => {
+    if (connectionsLoaded && settingsLoaded) checkRecent();
+  }, [connectionsLoaded, settingsLoaded, checkRecent]);
+}
+
+function Page() {
+  const view = useNavigationStore((s) => s.view);
+  switch (view.page) {
+    case "connection":
+      // A fresh key per connection resets the page's step and form.
+      return <ConnectionPage key={view.editingId ?? "new"} editingId={view.editingId} />;
+    case "settings":
+      return <SettingsPage />;
+    case "welcome":
+      return <WelcomePage />;
+  }
+}
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
-
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  const session = useSessionsStore((s) =>
+    s.activeSessionId ? s.sessions[s.activeSessionId] : undefined,
+  );
+  useStartup();
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    <TooltipProvider>
+      {session ? <WorkspacePage session={session} /> : <Page />}
+      <Toaster position="bottom-right" />
+    </TooltipProvider>
   );
 }
 

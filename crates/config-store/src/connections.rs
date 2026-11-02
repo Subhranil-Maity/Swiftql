@@ -17,6 +17,7 @@ use crate::{
 // ---------- what the frontend sees ----------
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct SavedConnection {
     pub id: Uuid,
@@ -38,6 +39,7 @@ pub struct SavedConnection {
 
 /// `Auth` without secret values; `saved` says whether the keyring has one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum StoredAuth {
     None,
@@ -49,6 +51,7 @@ pub enum StoredAuth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct StoredTunnel {
     pub host: String,
@@ -58,6 +61,7 @@ pub struct StoredTunnel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum StoredSshAuth {
     Password { saved: bool },
@@ -66,6 +70,7 @@ pub enum StoredSshAuth {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionStatus {
     pub at: DateTime<Utc>,
@@ -82,6 +87,7 @@ pub struct ConnectionStatus {
 /// With `save_password`, an empty password (or passphrase) keeps the secret
 /// already in the keyring, so the UI does not need to know it to save edits.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionInput {
     #[serde(default)]
@@ -380,6 +386,63 @@ impl<'a> ConnectionRepo<'a> {
             tls: config.tls,
             tunnel,
             options: config.options,
+        })
+    }
+
+    /// Turns form input into a `ConnectConfig` without saving anything, e.g.
+    /// to test a connection.
+    ///
+    /// When `input.id` is an existing connection, an empty password or
+    /// passphrase is filled from the keyring, like `save` keeps it on edit.
+    /// The UI never gets saved secrets back, so this lets you test an edited
+    /// connection without retyping its password.
+    pub fn resolve_input(&self, input: ConnectionInput) -> ConfigResult<ConnectConfig> {
+        let saved = |kind: SecretKind| -> ConfigResult<Option<Secret>> {
+            match input.id {
+                Some(id) => self.secrets.get(SecretRef::new(id, kind)),
+                None => Ok(None),
+            }
+        };
+        let fill = |value: Secret, kind: SecretKind| -> ConfigResult<Secret> {
+            if !value.expose().is_empty() {
+                return Ok(value);
+            }
+            Ok(saved(kind)?.unwrap_or(value))
+        };
+
+        let auth = match input.auth {
+            Auth::Password { user, password } => Auth::Password {
+                user,
+                password: fill(password, SecretKind::DbPassword)?,
+            },
+            other => other,
+        };
+        let tunnel = match input.tunnel {
+            None => None,
+            Some(t) => {
+                let auth = match t.auth {
+                    SshAuth::Password { password } => SshAuth::Password {
+                        password: fill(password, SecretKind::SshPassword)?,
+                    },
+                    SshAuth::Key { path, passphrase } => SshAuth::Key {
+                        path,
+                        passphrase: match passphrase {
+                            Some(p) => Some(fill(p, SecretKind::SshPassphrase)?),
+                            None => saved(SecretKind::SshPassphrase)?,
+                        },
+                    },
+                    SshAuth::Agent => SshAuth::Agent,
+                };
+                Some(SshTunnel { auth, ..t })
+            }
+        };
+
+        Ok(ConnectConfig {
+            target: input.target,
+            auth,
+            tls: input.tls,
+            tunnel,
+            options: input.options,
         })
     }
 
@@ -765,6 +828,48 @@ mod tests {
         assert!(matches!(config.auth, Auth::PasswordPrompt { ref user } if user == "alice"));
         let config = repo.resolve(c.id, Some(Secret::new("typed"))).unwrap();
         assert!(matches!(config.auth, Auth::Password { ref password, .. } if password.expose() == "typed"));
+    }
+
+    fn password_of(config: &ConnectConfig) -> &str {
+        match &config.auth {
+            Auth::Password { password, .. } => password.expose(),
+            other => panic!("unexpected auth {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_input_fills_empty_password_from_keyring() {
+        let f = Fixture::new();
+        let repo = f.repo();
+        let c = repo.save(pg("db", "s3cret", true)).unwrap();
+
+        // Editing an existing connection: empty password → saved one.
+        let mut edit = pg("db", "", true);
+        edit.id = Some(c.id);
+        assert_eq!(password_of(&repo.resolve_input(edit.clone()).unwrap()), "s3cret");
+
+        // A typed password wins.
+        let mut typed = pg("db", "typed", true);
+        typed.id = Some(c.id);
+        assert_eq!(password_of(&repo.resolve_input(typed).unwrap()), "typed");
+
+        // A new connection has nothing to fill from.
+        let fresh = pg("db", "", true);
+        assert_eq!(password_of(&repo.resolve_input(fresh).unwrap()), "");
+
+        // Nothing is written.
+        assert_eq!(repo.list().unwrap().len(), 1);
+        assert_eq!(f.backend.len(), 1);
+    }
+
+    #[test]
+    fn resolve_input_keeps_target_and_other_auth() {
+        let f = Fixture::new();
+        let mut i = pg("db", "", false);
+        i.auth = Auth::PasswordPrompt { user: "bob".into() };
+        let config = f.repo().resolve_input(i).unwrap();
+        assert!(matches!(config.auth, Auth::PasswordPrompt { ref user } if user == "bob"));
+        assert!(matches!(config.target, Target::Host { port: Some(5432), .. }));
     }
 
     #[test]

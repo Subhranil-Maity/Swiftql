@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "scope", rename_all = "camelCase")]
 pub enum IntrospectScope {
     Schemas,                                        // "What schemas exist?"
@@ -9,6 +10,7 @@ pub enum IntrospectScope {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum SchemaSnapshot {
     Schemas(Vec<Schema>), // you asked: "what schemas exist?"
@@ -17,6 +19,7 @@ pub enum SchemaSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct Schema {
     pub name: String,
@@ -24,6 +27,7 @@ pub struct Schema {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct Table {
     pub name: String,
@@ -32,6 +36,7 @@ pub struct Table {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum TableKind {
     Table,
@@ -42,6 +47,7 @@ pub enum TableKind {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct Column {
     pub name: String,

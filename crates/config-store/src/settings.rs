@@ -14,6 +14,7 @@ use crate::error::{ConfigError, ConfigResult};
 pub const SETTINGS_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub version: u32,
@@ -36,12 +37,14 @@ impl Default for Settings {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct GeneralSettings {
     pub theme: Theme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum Theme {
     Light,
@@ -51,6 +54,7 @@ pub enum Theme {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct EditorSettings {
     pub font_family: String,
@@ -71,6 +75,7 @@ impl Default for EditorSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct QuerySettings {
     pub row_limit: u32,
@@ -89,10 +94,14 @@ impl Default for QuerySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConnectionSettings {
     pub connect_timeout_secs: u32,
     pub keepalive_secs: u32, // 0 = off
+    /// How many recently used connections to health-check when the app
+    /// opens. 0 = off.
+    pub check_on_startup: u32,
 }
 
 impl Default for ConnectionSettings {
@@ -100,6 +109,7 @@ impl Default for ConnectionSettings {
         Self {
             connect_timeout_secs: 10,
             keepalive_secs: 60,
+            check_on_startup: 10,
         }
     }
 }
@@ -125,6 +135,10 @@ impl Settings {
         check(
             (1..=600).contains(&self.connection.connect_timeout_secs),
             "connection.connectTimeoutSecs must be between 1 and 600",
+        )?;
+        check(
+            self.connection.check_on_startup <= 50,
+            "connection.checkOnStartup must be between 0 and 50",
         )?;
         Ok(())
     }
@@ -252,6 +266,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(store(&dir).get(), Settings::default());
         assert!(!dir.path().join("settings.json").exists());
+    }
+
+    #[test]
+    fn defaults() {
+        let s = Settings::default();
+        assert_eq!(s.version, SETTINGS_VERSION);
+        assert_eq!(s.connection.connect_timeout_secs, 10);
+        assert_eq!(s.connection.keepalive_secs, 60);
+        assert_eq!(s.connection.check_on_startup, 10);
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn older_file_without_check_on_startup_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{ "version": 1, "connection": { "connectTimeoutSecs": 5 } }"#).unwrap();
+        let s = store(&dir).get();
+        assert_eq!(s.connection.connect_timeout_secs, 5);
+        assert_eq!(s.connection.check_on_startup, 10);
+        assert!(path.exists(), "a valid file must not be moved to .bak");
+    }
+
+    #[test]
+    fn check_on_startup_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(&dir);
+        let set = |n: i64| s.update(json!({ "connection": { "checkOnStartup": n } }));
+        assert_eq!(set(0).unwrap().connection.check_on_startup, 0);
+        assert_eq!(set(50).unwrap().connection.check_on_startup, 50);
+        assert!(matches!(set(51).unwrap_err(), ConfigError::Invalid(_)));
+        assert!(matches!(set(-1).unwrap_err(), ConfigError::Json(_)));
+        assert_eq!(s.get().connection.check_on_startup, 50);
     }
 
     #[test]

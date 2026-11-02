@@ -9,3 +9,9 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[workspace.dependencies]
+# Pinned together: tauri-specta requires an exact specta rc.
+specta = { version = "=2.0.0-rc.26", features = ["derive", "chrono", "uuid", "serde_json"] }
+specta-typescript = "=0.0.13"
+tauri-specta = { version = "=2.0.0-rc.26", features = ["derive", "typescript"] }

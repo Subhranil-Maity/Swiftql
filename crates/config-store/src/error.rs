@@ -46,3 +46,35 @@ impl Serialize for ConfigError {
         s.end()
     }
 }
+
+/// TS shape of the custom `Serialize` above.
+#[cfg(feature = "specta")]
+impl specta::Type for ConfigError {
+    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
+        shape::ConfigError::definition(types)
+    }
+}
+
+#[cfg(feature = "specta")]
+mod shape {
+    #![allow(dead_code)]
+    use serde::Serialize;
+
+    #[derive(Serialize, specta::Type)]
+    pub struct ConfigError {
+        kind: ConfigErrorKind,
+        message: String,
+    }
+
+    /// Must match `ConfigError::kind`.
+    #[derive(Serialize, specta::Type)]
+    #[serde(rename_all = "camelCase")]
+    pub enum ConfigErrorKind {
+        Io,
+        Json,
+        Sqlite,
+        Keyring,
+        NotFound,
+        Invalid,
+    }
+}

@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
     Syntax,
@@ -16,6 +17,7 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug, Clone, Serialize, thiserror::Error)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 #[error("{message}")]
 pub struct DbError {

@@ -3,7 +3,10 @@ use std::net::IpAddr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "camelCase")]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+// TS name is DbValue so it does not clash with serde_json::Value (container
+// rename does not change the JSON).
+#[serde(rename = "DbValue", tag = "type", content = "value", rename_all = "camelCase")]
 pub enum Value {
     Null,
     Bool(bool),

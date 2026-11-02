@@ -49,6 +49,7 @@ pub struct RowBatch {
     pub has_more: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum TxStatus {
     Idle, // not in a transaction
@@ -56,6 +57,7 @@ pub enum TxStatus {
     Failed, // error inside a tx: everything fails until ROLLBACK
 }
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct ServerVersion {
     pub product: String, // "PostgreSQL", "MySQL", "MariaDB"
     pub major: u32,      // 16
@@ -70,6 +72,7 @@ impl ServerVersion {
     }
 }
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct RowEvent {
     pub query_id: Uuid,

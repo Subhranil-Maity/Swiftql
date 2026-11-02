@@ -8,12 +8,17 @@ use config_store::{
     ConfigError, ConfigManager, ConfigResult, ConnectionInput, ConnectionStatus, KeyringBackend,
     KeyringStatus, SavedConnection, SecretKind, Settings, Uuid,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, State};
+use specta::Type;
+use tauri::{AppHandle, State};
+use tauri_specta::Event;
 
 pub type Config = Arc<ConfigManager>;
 
-pub const SETTINGS_CHANGED: &str = "settings-changed";
+/// Emitted after every settings change, to every window.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+pub struct SettingsChanged(pub Settings);
 
 async fn blocking<T, F>(config: &State<'_, Config>, f: F) -> ConfigResult<T>
 where
@@ -27,19 +32,21 @@ where
 }
 
 fn emit_settings(app: &AppHandle, settings: &Settings) {
-    if let Err(err) = app.emit(SETTINGS_CHANGED, settings) {
-        tracing::warn!(error = %err, "failed to emit {SETTINGS_CHANGED}");
+    if let Err(err) = SettingsChanged(settings.clone()).emit(app) {
+        tracing::warn!(error = %err, "failed to emit {}", SettingsChanged::NAME);
     }
 }
 
 // ---------- settings ----------
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_settings(config: State<'_, Config>) -> ConfigResult<Settings> {
     blocking(&config, |c| Ok(c.settings().get())).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn update_settings(
     app: AppHandle,
     config: State<'_, Config>,
@@ -51,6 +58,7 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn reset_settings(app: AppHandle, config: State<'_, Config>) -> ConfigResult<Settings> {
     let settings = blocking(&config, |c| c.settings().reset()).await?;
     emit_settings(&app, &settings);
@@ -60,11 +68,13 @@ pub async fn reset_settings(app: AppHandle, config: State<'_, Config>) -> Config
 // ---------- connections ----------
 
 #[tauri::command]
+#[specta::specta]
 pub async fn list_connections(config: State<'_, Config>) -> ConfigResult<Vec<SavedConnection>> {
     blocking(&config, |c| c.connections().list()).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn recent_connections(
     config: State<'_, Config>,
     limit: Option<u32>,
@@ -73,11 +83,13 @@ pub async fn recent_connections(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_connection(config: State<'_, Config>, id: Uuid) -> ConfigResult<SavedConnection> {
     blocking(&config, move |c| c.connections().get(id)).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn save_connection(
     config: State<'_, Config>,
     input: ConnectionInput,
@@ -86,16 +98,19 @@ pub async fn save_connection(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn delete_connection(config: State<'_, Config>, id: Uuid) -> ConfigResult<()> {
     blocking(&config, move |c| c.connections().delete(id)).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn touch_connection(config: State<'_, Config>, id: Uuid) -> ConfigResult<()> {
     blocking(&config, move |c| c.connections().touch(id)).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_connection_status(
     config: State<'_, Config>,
     id: Uuid,
@@ -107,6 +122,7 @@ pub async fn set_connection_status(
 // ---------- secrets / misc ----------
 
 #[tauri::command]
+#[specta::specta]
 pub async fn clear_connection_secret(
     config: State<'_, Config>,
     id: Uuid,
@@ -116,16 +132,19 @@ pub async fn clear_connection_secret(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn keyring_status(config: State<'_, Config>) -> ConfigResult<KeyringStatus> {
     blocking(&config, |_| Ok(KeyringBackend::available())).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn get_app_state(config: State<'_, Config>, key: String) -> ConfigResult<Option<Value>> {
     blocking(&config, move |c| c.app_state(&key)).await
 }
 
 #[tauri::command]
+#[specta::specta]
 pub async fn set_app_state(
     config: State<'_, Config>,
     key: String,

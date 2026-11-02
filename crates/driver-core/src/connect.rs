@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Everything a driver needs to open a connection.
 /// Target, auth and transport are independent, so each is its own enum.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectConfig {
     pub target: Target,
@@ -20,6 +21,7 @@ pub struct ConnectConfig {
 // ---------- where the database is ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "method", rename_all = "camelCase")]
 pub enum Target {
     Url {
@@ -40,6 +42,7 @@ pub enum Target {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum TargetKind {
     Url,
@@ -62,6 +65,7 @@ impl Target {
 // ---------- how you prove who you are ----------
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Auth {
     None,
@@ -87,6 +91,7 @@ pub enum Auth {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum AuthKind {
     None,
@@ -111,6 +116,7 @@ impl Auth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "provider", rename_all = "camelCase")]
 pub enum TokenProvider {
     AwsIam { region: String },
@@ -120,6 +126,7 @@ pub enum TokenProvider {
 // ---------- how you reach it ----------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct TlsConfig {
     #[serde(default)]
@@ -128,6 +135,7 @@ pub struct TlsConfig {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub enum SslMode {
     Disable,
@@ -139,6 +147,7 @@ pub enum SslMode {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct SshTunnel {
     pub host: String,
@@ -148,6 +157,7 @@ pub struct SshTunnel {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SshAuth {
     Password { password: Secret },
@@ -160,6 +170,7 @@ pub enum SshAuth {
 /// Password or passphrase. Can be received from the frontend but is never
 /// serialized back, and prints as `***` in logs.
 #[derive(Clone, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(transparent)]
 pub struct Secret(String);
 
@@ -183,6 +194,7 @@ impl fmt::Debug for Secret {
 
 /// Describes one entry of `ConnectConfig::options` so the UI can render it.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct FieldSpec {
     pub key: &'static str,   // "application_name"
@@ -193,6 +205,7 @@ pub struct FieldSpec {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FieldKind {
     Text,

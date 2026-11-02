@@ -29,7 +29,7 @@ pub fn static_capabilities() -> Capabilities {
         transactional_ddl: true,
         error_aborts_transaction: true,
         cancel_query: true,
-        multiple_result_sets: false, // TODO: execute returns a single ExecOutcome (see driver-core TODO.md)
+        multiple_result_sets: false, // TODO: execute returns a single ExecOutcome (see TODO.md, driver-core)
         server_notices: false,       // TODO: no notice API in driver-core yet
         listen_notify: false,        // TODO: no LISTEN/NOTIFY API in driver-core yet
         parameters: false,           // TODO: no execute_params on Connection yet
