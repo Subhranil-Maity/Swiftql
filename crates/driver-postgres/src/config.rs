@@ -8,7 +8,7 @@ use driver_core::{
 use tokio_postgres::config::SslMode as PgSslMode;
 
 const DEFAULT_PORT: u16 = 5432;
-// TODO: take the timeout from the app's global config, passed down from the main application
+// TODO: use Settings.connection.connect_timeout_secs (config-store), passed down once Tauri connect commands exist
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const APPLICATION_NAME: &str = "Swiftql";
 
