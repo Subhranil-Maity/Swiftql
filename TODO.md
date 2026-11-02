@@ -8,6 +8,12 @@
   because the Vite dev server serves unbundled modules; the loading screen in
   `index.html` covers the wait, but check how long it shows in a real build.
 
+### Console tab strip: smooth mouse-wheel scrolling
+
+- Scrolling the overflowing console tab strip with a mouse wheel still jumps
+  per notch instead of gliding; trackpad scrolling is smooth. The easing lives
+  in `src/features/console/hooks/use-horizontal-wheel-scroll.ts`.
+
 ## driver-core
 
 ### Server messages and timing
