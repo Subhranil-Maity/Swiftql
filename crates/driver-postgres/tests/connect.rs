@@ -95,6 +95,7 @@ async fn introspect_tables_and_details() {
             table: "nope".into(),
         })
         .await;
+    let catalog = conn.introspect(IntrospectScope::Catalog).await;
     conn.close().await;
     setup
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
@@ -125,4 +126,27 @@ async fn introspect_tables_and_details() {
     assert!(columns[1].nullable);
 
     assert_eq!(missing.err().map(|e| e.kind), Some(ErrorKind::NotFound));
+
+    let Ok(SchemaSnapshot::Catalog {
+        schemas,
+        search_path,
+    }) = catalog
+    else {
+        panic!("expected a catalog: {catalog:?}");
+    };
+    assert!(!search_path.is_empty());
+    let ours = schemas.iter().find(|s| s.name == schema).unwrap();
+    let tables = ours.tables.as_ref().unwrap();
+    let names: Vec<_> = tables.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["events", "user_emails", "users"]);
+    let users = tables.iter().find(|t| t.name == "users").unwrap();
+    let columns: Vec<_> = users
+        .columns
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(columns, ["id", "email"]);
+    assert!(schemas.iter().all(|s| s.name != "pg_catalog"));
 }

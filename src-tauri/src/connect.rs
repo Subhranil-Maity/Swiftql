@@ -201,12 +201,7 @@ pub async fn connect(
     };
     let version = short_version(conn.server_version());
     let session = sessions
-        .insert(Session {
-            id: Uuid::new_v4(),
-            connection_id: id,
-            driver_id: driver.id(),
-            conn,
-        })
+        .insert(Session::new(id, driver.id(), conn))
         .await;
     record(&config, id, succeeded(version), true).await;
     Ok(session.info())

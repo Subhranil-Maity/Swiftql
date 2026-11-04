@@ -5,29 +5,11 @@
 import { type Diagnostic, linter } from "@codemirror/lint";
 import type { Extension, Text } from "@uiw/react-codemirror";
 
+import { loadPgParser, type PgParser } from "@/features/console/lib/pg-parser";
+import { codePointToOffset } from "@/features/console/lib/text-offsets";
+
 /** Wait after the last keystroke before re-checking. */
 const LINT_DELAY_MS = 400;
-
-type LibPgQuery = typeof import("libpg-query");
-
-// Loaded on first check so the 1.7 MB parser stays out of app startup.
-let parser: Promise<LibPgQuery> | null = null;
-function loadParser(): Promise<LibPgQuery> {
-  parser ??= import("libpg-query").catch((error: unknown) => {
-    parser = null; // Try again on the next check.
-    throw error;
-  });
-  return parser;
-}
-
-/** Postgres counts characters (code points); CodeMirror offsets are UTF-16 units. */
-function codePointToOffset(text: string, codePoints: number): number {
-  let offset = 0;
-  for (let i = 0; i < codePoints && offset < text.length; i++) {
-    offset += (text.codePointAt(offset) ?? 0) > 0xffff ? 2 : 1;
-  }
-  return offset;
-}
 
 /** Range to underline for an error at `pos`: the token there, or the last one at end of input. */
 function errorRange(doc: Text, pos: number): { from: number; to: number } {
@@ -51,16 +33,16 @@ async function checkPostgres(doc: Text): Promise<Diagnostic[]> {
   const sql = doc.toString();
   if (!sql.trim()) return [];
 
-  let pg: LibPgQuery;
+  let pg: PgParser;
   try {
-    pg = await loadParser();
+    pg = await loadPgParser();
   } catch (error) {
     console.warn("SQL syntax checker failed to load:", error);
     return [];
   }
 
   try {
-    await pg.parse(sql);
+    pg.parseSync(sql);
     return [];
   } catch (error) {
     if (!pg.hasSqlDetails(error)) {

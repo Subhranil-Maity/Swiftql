@@ -66,6 +66,16 @@ const chrome = {
     color: "var(--foreground)",
   },
   ".cm-foldGutter .cm-gutterElement": { color: "var(--muted-foreground)" },
+
+  // Statements (statement-markers.ts): a bar beside the one Ctrl+Enter runs,
+  // a faint rule where the next one starts.
+  ".cm-statement-gutter .cm-gutterElement": { width: "6px", padding: "0" },
+  ".cm-statement-gutter .cm-statement-bar": {
+    boxShadow: "inset 2px 0 0 var(--foreground)",
+  },
+  ".cm-statement-start": {
+    boxShadow: `inset 0 1px 0 ${tint("var(--foreground)", 8)}`,
+  },
   ".cm-foldPlaceholder": {
     backgroundColor: "var(--muted)",
     border: "none",

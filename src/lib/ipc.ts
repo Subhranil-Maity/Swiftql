@@ -46,6 +46,15 @@ export type FieldSpec = bindings.FieldSpec_Serialize;
 export type Settings = bindings.Settings_Serialize;
 export type DbError = bindings.DbError_Serialize;
 export type ConnectionHealth = bindings.ConnectionHealth_Serialize;
+export type RunEvent = bindings.RunEvent_Serialize;
+export type RunSummary = bindings.RunSummary_Serialize;
+export type Notice = bindings.Notice_Serialize;
+export type ColumnMeta = bindings.ColumnMeta_Serialize;
+export type DbValue = bindings.DbValue_Serialize;
+export type SchemaSnapshot = bindings.SchemaSnapshot_Serialize;
+export type Schema = bindings.Schema_Serialize;
+export type Table = bindings.Table_Serialize;
+
 export type {
   Auth,
   AuthKind,
@@ -53,13 +62,18 @@ export type {
   ConfigError,
   ErrorKind,
   FieldKind,
+  Column,
   HealthState,
+  IntrospectScope,
+  NoticeSeverity,
   ServerVersion,
   SessionInfo,
   SslMode,
   StoredAuth,
+  TableKind,
   TargetKind,
   TxStatus,
 } from "@/bindings";
 
 export { IpcError } from "@/lib/ipc-error";
+export { Channel } from "@tauri-apps/api/core";

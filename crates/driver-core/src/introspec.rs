@@ -7,6 +7,7 @@ pub enum IntrospectScope {
     Schemas,                                        // "What schemas exist?"
     Tables { schema: String },                      // "What tables are in this schema?"
     TableDetails { schema: String, table: String }, // "Tell me everything about this table"
+    Catalog, // every user schema with its tables and columns, in one go (autocomplete)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -16,6 +17,12 @@ pub enum SchemaSnapshot {
     Schemas(Vec<Schema>), // you asked: "what schemas exist?"
     Tables(Vec<Table>),   // you asked: "what tables are in this schema?"
     TableDetails(Table),  // you asked: "give me everything about this table"
+    #[serde(rename_all = "camelCase")]
+    Catalog {
+        schemas: Vec<Schema>, // tables and columns filled in
+        /// Schemas unqualified names resolve against, in order (existing ones only).
+        search_path: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]

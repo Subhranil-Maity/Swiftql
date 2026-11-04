@@ -13,10 +13,18 @@ export class IpcError extends Error {
   readonly code: string | null;
   readonly hint: string | null;
   readonly detail: string | null;
+  /** Character offset of the error in the statement, for pointing at it in the editor. */
+  readonly position: number | null;
 
   constructor(
     message: string,
-    opts: { kind?: string; code?: string | null; hint?: string | null; detail?: string | null } = {},
+    opts: {
+      kind?: string;
+      code?: string | null;
+      hint?: string | null;
+      detail?: string | null;
+      position?: number | null;
+    } = {},
   ) {
     super(message);
     this.name = "IpcError";
@@ -24,6 +32,7 @@ export class IpcError extends Error {
     this.code = opts.code ?? null;
     this.hint = opts.hint ?? null;
     this.detail = opts.detail ?? null;
+    this.position = opts.position ?? null;
   }
 
   static from(error: unknown): IpcError {
@@ -37,6 +46,7 @@ export class IpcError extends Error {
         code: e.code,
         hint: e.hint,
         detail: e.detail,
+        position: typeof e.position === "number" ? e.position : null,
       });
     }
     return new IpcError(String(error));

@@ -30,7 +30,7 @@ pub fn static_capabilities() -> Capabilities {
         error_aborts_transaction: true,
         cancel_query: true,
         multiple_result_sets: false, // TODO: execute returns a single ExecOutcome (see TODO.md, driver-core)
-        server_notices: false,       // TODO: no notice API in driver-core yet
+        server_notices: true,
         listen_notify: false,        // TODO: no LISTEN/NOTIFY API in driver-core yet
         parameters: false,           // TODO: no execute_params on Connection yet
         streaming_cursor: false, // TODO: rows are streamed without cursor paging (see stream.rs)

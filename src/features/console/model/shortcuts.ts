@@ -1,4 +1,5 @@
-// Labels for the console shortcuts handled in `use-console-shortcuts.ts`.
+// Labels for the console shortcuts. Tab shortcuts are handled in
+// `use-console-shortcuts.ts`; the run shortcuts in the editor's keymap (`sql-editor.tsx`).
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
 const MOD = isMac ? "⌘" : "Ctrl+";
@@ -6,6 +7,6 @@ const MOD = isMac ? "⌘" : "Ctrl+";
 export const SHORTCUTS = {
   newTab: `${MOD}T`,
   closeTab: `${MOD}W`,
-  // TODO: wire up once queries can run
-  run: `${MOD}Enter`,
+  runStatement: `${MOD}Enter`,
+  runScript: isMac ? "⇧⌘Enter" : "Ctrl+Shift+Enter",
 } as const;

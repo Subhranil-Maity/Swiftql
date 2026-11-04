@@ -1,6 +1,8 @@
 mod config;
 mod connect;
 mod drivers;
+mod introspect;
+mod query;
 mod session;
 
 use std::sync::Arc;
@@ -14,7 +16,7 @@ const BINDINGS_PATH: &str = "../src/bindings.ts";
 
 /// Every command, event and extra type the frontend can see.
 fn specta_builder() -> Builder<tauri::Wry> {
-    use driver_core::{connection, introspec, types, value};
+    use driver_core::{notice, types, value};
 
     Builder::<tauri::Wry>::new()
         .commands(collect_commands![
@@ -38,14 +40,17 @@ fn specta_builder() -> Builder<tauri::Wry> {
             connect::connect,
             connect::disconnect,
             connect::list_sessions,
+            query::run_statements,
+            query::cancel_run,
+            introspect::introspect,
         ])
         .events(collect_events![config::SettingsChanged])
         // Not used by a command yet, exported so the whole data model is in TS.
         .typ::<value::Value>()
         .typ::<types::ColumnMeta>()
-        .typ::<connection::RowEvent>()
-        .typ::<introspec::IntrospectScope>()
-        .typ::<introspec::SchemaSnapshot>()
+        .typ::<notice::Notice>()
+        .typ::<query::RunEvent>()
+        .typ::<query::RunSummary>()
         .typ::<driver_core::error::DbError>()
         .typ::<config_store::ConfigError>()
         // i64 appears in Value::Int, sortOrder and Interval.microseconds. The

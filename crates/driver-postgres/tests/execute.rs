@@ -5,6 +5,7 @@ use driver_core::{
     connection::{Connection, ExecOutcome, RowBatch, TxStatus},
     driver::Driver,
     error::ErrorKind,
+    notice::NoticeSeverity,
     types::LogicalType,
     value::Value,
 };
@@ -42,7 +43,11 @@ async fn affected(conn: &dyn Connection, sql: &str) -> (u64, String) {
 #[ignore]
 async fn decodes_types() {
     let conn = connect().await;
-    let ExecOutcome::Rows { columns, mut stream } = conn
+    let ExecOutcome::Rows {
+        columns,
+        mut stream,
+        ..
+    } = conn
         .execute(
             "SELECT 1::int4, 9007199254740993::int8, 12.340::numeric, 'hi'::text, NULL::text,
                     '{\"a\": [1, 2]}'::jsonb, ARRAY[[1, 2], [3, 4]], int4range(1, 5),
@@ -210,4 +215,64 @@ async fn early_close_cancels_and_frees_connection() {
     );
 
     assert_eq!(rows(&*conn, "SELECT 42").await.len(), 1); // connection still usable
+}
+
+#[tokio::test]
+#[ignore]
+async fn notices_arrive_in_order() {
+    let conn = connect().await;
+    assert!(conn.take_notices().is_empty());
+    affected(
+        &*conn,
+        "DO $$ BEGIN RAISE NOTICE 'first'; RAISE WARNING 'second' USING HINT = 'h'; END $$",
+    )
+    .await;
+    let notices = conn.take_notices();
+    let got: Vec<_> = notices
+        .iter()
+        .map(|n| (n.severity, n.message.as_str()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (NoticeSeverity::Notice, "first"),
+            (NoticeSeverity::Warning, "second")
+        ]
+    );
+    assert_eq!(notices[1].hint.as_deref(), Some("h"));
+    assert!(conn.take_notices().is_empty()); // drained
+
+    // from a SELECT: queued by the time its rows have been read
+    affected(
+        &*conn,
+        "CREATE FUNCTION pg_temp.shout() RETURNS int LANGUAGE plpgsql AS          $$ BEGIN RAISE INFO 'from select'; RETURN 1; END $$",
+    )
+    .await;
+    assert_eq!(rows(&*conn, "SELECT pg_temp.shout()").await.len(), 1);
+    let notices = conn.take_notices();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].severity, NoticeSeverity::Info);
+}
+
+#[tokio::test]
+#[ignore]
+async fn rows_report_command() {
+    let conn = connect().await;
+    let ExecOutcome::Rows { command, .. } = conn.execute("SELECT 1").await.unwrap() else {
+        panic!("expected rows");
+    };
+    assert_eq!(command, "SELECT");
+    affected(&*conn, "CREATE TEMP TABLE c (a int)").await;
+    let ExecOutcome::Rows { command, .. } = conn
+        .execute("INSERT INTO c VALUES (1) RETURNING a")
+        .await
+        .unwrap()
+    else {
+        panic!("expected rows");
+    };
+    assert_eq!(command, "INSERT");
+    assert_eq!(
+        affected(&*conn, "CREATE TEMP TABLE d AS SELECT 1 AS a").await,
+        (1, "SELECT".to_owned())
+    );
 }

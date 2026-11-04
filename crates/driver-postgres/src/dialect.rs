@@ -25,6 +25,18 @@ impl Dialect for PgDialect {
     fn placeholder(&self, index: usize) -> String {
         format!("${index}")
     }
+
+    /// The tag psql prints. INSERT keeps the historic OID column (always 0);
+    /// commands without a count, e.g. CREATE TABLE, are just the command.
+    fn command_tag(&self, command: &str, rows: u64) -> String {
+        match command {
+            "INSERT" => format!("INSERT 0 {rows}"),
+            "SELECT" | "UPDATE" | "DELETE" | "MERGE" | "FETCH" | "MOVE" | "COPY" => {
+                format!("{command} {rows}")
+            }
+            _ => command.to_owned(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -40,5 +52,16 @@ mod tests {
         assert_eq!(d.quote_literal(r"C:\tmp"), r"E'C:\\tmp'");
         assert_eq!(d.qualified_name("public", "User"), r#""public"."User""#);
         assert_eq!(d.placeholder(1), "$1");
+    }
+
+    #[test]
+    fn command_tags() {
+        let d = PgDialect;
+        assert_eq!(d.command_tag("INSERT", 3), "INSERT 0 3");
+        assert_eq!(d.command_tag("SELECT", 1000), "SELECT 1000");
+        assert_eq!(d.command_tag("UPDATE", 0), "UPDATE 0");
+        assert_eq!(d.command_tag("MERGE", 2), "MERGE 2");
+        assert_eq!(d.command_tag("CREATE TABLE", 0), "CREATE TABLE");
+        assert_eq!(d.command_tag("BEGIN", 0), "BEGIN");
     }
 }
