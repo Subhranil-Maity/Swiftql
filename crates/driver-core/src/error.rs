@@ -13,6 +13,7 @@ pub enum ErrorKind {
     Timeout,
     NotFound,
     Unsupported,
+    Busy, // a query is already running in this session
     Internal,
 }
 

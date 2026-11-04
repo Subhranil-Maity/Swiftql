@@ -7,6 +7,7 @@ use crate::{
     dbresults::DbResult,
     dialect::Dialect,
     introspec::{IntrospectScope, SchemaSnapshot},
+    notice::Notice,
     types::ColumnMeta,
     value::Value,
 };
@@ -22,12 +23,22 @@ pub trait Connection: Send + Sync {
     async fn introspect(&self, scope: IntrospectScope) -> DbResult<SchemaSnapshot>;
     async fn ping(&self) -> DbResult<()>;
     async fn close(self: Box<Self>);
+
+    /// Notices received since the last call, oldest first. Statements on a
+    /// connection run one at a time, so draining after each statement
+    /// attributes its notices to it. Drivers without notices return nothing.
+    fn take_notices(&self) -> Vec<Notice> {
+        Vec::new()
+    }
 }
 
 pub enum ExecOutcome {
     Rows {
         columns: Vec<ColumnMeta>,
         stream: Box<dyn RowStream>,
+        /// Leading keyword, e.g. "SELECT", or "INSERT" for `INSERT ... RETURNING`;
+        /// with the row count it makes the final tag (`Dialect::command_tag`).
+        command: String,
     }, // streamed in batches
     Affected {
         rows: u64,

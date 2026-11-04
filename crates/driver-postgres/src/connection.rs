@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use driver_core::{
@@ -8,9 +11,11 @@ use driver_core::{
     dialect::Dialect,
     error::{DbError, ErrorKind},
     introspec::{IntrospectScope, SchemaSnapshot},
+    notice::{Notice, NoticeSeverity},
 };
 use tokio_postgres::{
-    Client, NoTls, Socket,
+    AsyncMessage, Client, NoTls, Socket,
+    error::Severity,
     tls::{MakeTlsConnect, TlsConnect},
     types::ToSql,
 };
@@ -30,6 +35,12 @@ use crate::{
 /// Oldest supported server (server_version_num of PostgreSQL 10.0).
 const MIN_VERSION_NUM: i32 = 100_000;
 
+/// Notices kept until someone reads them; older ones are dropped first.
+const MAX_NOTICES: usize = 1000;
+
+/// Filled by the connection task, drained by `take_notices`.
+pub(crate) type NoticeQueue = Arc<Mutex<VecDeque<Notice>>>;
+
 pub struct PgConnection {
     pub(crate) client: Client,
     pub(crate) dialect: PgDialect,
@@ -38,15 +49,19 @@ pub struct PgConnection {
     pub(crate) tls: PgTls,                 // reused for cancel requests
     /// Why the background connection task stopped, if it failed.
     pub(crate) closed: Arc<Mutex<Option<DbError>>>,
+    pub(crate) notices: NoticeQueue,
     pub(crate) tx: TxState,
 }
 
 impl PgConnection {
     /// Connect, start the background connection task and read the server version.
     pub async fn open(config: &tokio_postgres::Config, tls: PgTls) -> DbResult<Self> {
+        let notices: NoticeQueue = Arc::default();
         let (client, closed) = match &tls {
-            PgTls::None => spawn_connection(config, NoTls).await?,
-            PgTls::Native(connector) => spawn_connection(config, connector.clone()).await?,
+            PgTls::None => spawn_connection(config, NoTls, Arc::clone(&notices)).await?,
+            PgTls::Native(connector) => {
+                spawn_connection(config, connector.clone(), Arc::clone(&notices)).await?
+            }
         };
 
         let version = server_version(&client).await?;
@@ -57,6 +72,7 @@ impl PgConnection {
             version,
             tls,
             closed,
+            notices,
             tx: Arc::new(Mutex::new(TxStatus::Idle)),
         })
     }
@@ -132,6 +148,7 @@ impl PgConnection {
         Ok(ExecOutcome::Rows {
             columns,
             stream: Box::new(PgRowStream::new(rows, cancel, Arc::clone(&self.tx))),
+            command: sql::command_tag(sql),
         })
     }
 
@@ -144,10 +161,12 @@ impl PgConnection {
 }
 
 /// tokio-postgres hands back the socket as a future that must be polled for the
-/// client to work, so it runs on its own task. Its error is kept for later calls.
+/// client to work, so it runs on its own task. Notices it reads go to `notices`;
+/// its error is kept for later calls.
 async fn spawn_connection<T>(
     config: &tokio_postgres::Config,
     tls: T,
+    notices: NoticeQueue,
 ) -> DbResult<(Client, Arc<Mutex<Option<DbError>>>)>
 where
     T: MakeTlsConnect<Socket>,
@@ -155,16 +174,60 @@ where
     T::TlsConnect: Send,
     <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
 {
-    let (client, connection) = config.connect(tls).await.map_err(map_err)?;
+    let (client, mut connection) = config.connect(tls).await.map_err(map_err)?;
 
     let closed = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&closed);
     tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(map_err(err));
+        // Messages arrive in socket order, so a statement's notices are queued
+        // before the client sees that statement complete.
+        loop {
+            match futures::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                Some(Ok(AsyncMessage::Notice(notice))) => push_notice(&notices, to_notice(&notice)),
+                Some(Ok(_)) => {} // TODO: LISTEN/NOTIFY
+                Some(Err(err)) => {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(map_err(err));
+                    break;
+                }
+                None => break, // client dropped
+            }
         }
     });
     Ok((client, closed))
+}
+
+fn push_notice(queue: &NoticeQueue, notice: Notice) {
+    let mut queue = queue.lock().unwrap_or_else(|e| e.into_inner());
+    if queue.len() >= MAX_NOTICES {
+        queue.pop_front();
+    }
+    queue.push_back(notice);
+}
+
+fn to_notice(db: &tokio_postgres::error::DbError) -> Notice {
+    // parsed_severity reads the untranslated field (PG 9.6+); older servers
+    // only send the localized one.
+    let severity = match db.parsed_severity() {
+        Some(Severity::Warning) => NoticeSeverity::Warning,
+        Some(Severity::Info) => NoticeSeverity::Info,
+        Some(Severity::Log) => NoticeSeverity::Log,
+        Some(Severity::Debug) => NoticeSeverity::Debug,
+        Some(_) => NoticeSeverity::Notice,
+        None => match db.severity() {
+            "WARNING" => NoticeSeverity::Warning,
+            "INFO" => NoticeSeverity::Info,
+            "LOG" => NoticeSeverity::Log,
+            s if s.starts_with("DEBUG") => NoticeSeverity::Debug,
+            _ => NoticeSeverity::Notice,
+        },
+    };
+    Notice {
+        severity,
+        message: db.message().to_owned(),
+        code: Some(db.code().code().to_owned()),
+        detail: db.detail().map(str::to_owned),
+        hint: db.hint().map(str::to_owned),
+    }
 }
 
 /// The server refuses to prepare "SELECT 1; SELECT 2".
@@ -251,5 +314,10 @@ impl Connection for PgConnection {
 
     async fn close(self: Box<Self>) {
         // Dropping the client sends Terminate; the connection task then ends by itself.
+    }
+
+    fn take_notices(&self) -> Vec<Notice> {
+        let mut queue = self.notices.lock().unwrap_or_else(|e| e.into_inner());
+        queue.drain(..).collect()
     }
 }

@@ -1,6 +1,9 @@
 //! Live database connections, keyed by a session id the frontend holds on to.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use driver_core::{
     capabilities::Capabilities,
@@ -8,7 +11,7 @@ use driver_core::{
 };
 use serde::Serialize;
 use specta::Type;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 pub struct Session {
@@ -16,9 +19,24 @@ pub struct Session {
     pub connection_id: Uuid,
     pub driver_id: &'static str,
     pub conn: Box<dyn Connection>,
+    /// Held for the whole of a console run: one run per session at a time.
+    pub run_lock: Mutex<()>,
+    /// Set by `cancel_run`; the running script stops before its next statement.
+    pub cancelled: AtomicBool,
 }
 
 impl Session {
+    pub fn new(connection_id: Uuid, driver_id: &'static str, conn: Box<dyn Connection>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            connection_id,
+            driver_id,
+            conn,
+            run_lock: Mutex::new(()),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
     pub fn info(&self) -> SessionInfo {
         SessionInfo {
             session_id: self.id,
@@ -55,6 +73,10 @@ impl SessionManager {
             .await
             .insert(session.id, Arc::clone(&session));
         session
+    }
+
+    pub async fn get(&self, id: Uuid) -> Option<Arc<Session>> {
+        self.sessions.read().await.get(&id).cloned()
     }
 
     pub async fn list(&self) -> Vec<Arc<Session>> {

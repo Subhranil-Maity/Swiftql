@@ -51,11 +51,13 @@ function App() {
   const session = useSessionsStore((s) =>
     s.activeSessionId ? s.sessions[s.activeSessionId] : undefined,
   );
+  // Settings opens over the workspace too; its Back returns there.
+  const showSettings = useNavigationStore((s) => s.view.page === "settings");
   useStartup();
 
   return (
     <TooltipProvider>
-      {session ? <WorkspacePage session={session} /> : <Page />}
+      {session && !showSettings ? <WorkspacePage session={session} /> : <Page />}
       <Toaster position="bottom-right" />
     </TooltipProvider>
   );

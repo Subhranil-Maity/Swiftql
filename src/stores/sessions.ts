@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-import { api, type SessionInfo } from "@/lib/ipc";
+import { api, type SessionInfo, type TxStatus } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 
 interface SessionsState {
@@ -12,6 +12,8 @@ interface SessionsState {
   /** Opens a saved connection and makes it active. Throws `IpcError`. */
   connect: (connectionId: string, password?: string) => Promise<SessionInfo>;
   disconnect: (sessionId: string) => Promise<void>;
+  /** Records the transaction status a run left the session in. */
+  setTxStatus: (sessionId: string, txStatus: TxStatus) => void;
 }
 
 export const useSessionsStore = create<SessionsState>()((set) => ({
@@ -46,4 +48,10 @@ export const useSessionsStore = create<SessionsState>()((set) => ({
       });
     }
   },
+  setTxStatus: (sessionId, txStatus) =>
+    set((s) => {
+      const session = s.sessions[sessionId];
+      if (!session || session.txStatus === txStatus) return s;
+      return { sessions: { ...s.sessions, [sessionId]: { ...session, txStatus } } };
+    }),
 }));
