@@ -1,6 +1,7 @@
 mod config;
 mod connect;
 mod drivers;
+mod export;
 mod introspect;
 mod query;
 mod session;
@@ -43,6 +44,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             query::run_statements,
             query::cancel_run,
             introspect::introspect,
+            export::write_export_file,
         ])
         .events(collect_events![config::SettingsChanged])
         // Not used by a command yet, exported so the whole data model is in TS.
@@ -96,6 +98,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);

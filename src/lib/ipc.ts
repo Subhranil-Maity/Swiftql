@@ -54,6 +54,7 @@ export type DbValue = bindings.DbValue_Serialize;
 export type SchemaSnapshot = bindings.SchemaSnapshot_Serialize;
 export type Schema = bindings.Schema_Serialize;
 export type Table = bindings.Table_Serialize;
+export type Column = bindings.Column_Serialize;
 
 export type {
   Auth,
@@ -61,8 +62,10 @@ export type {
   Capabilities,
   ConfigError,
   ErrorKind,
+  FkAction,
+  ForeignKey,
+  Index,
   FieldKind,
-  Column,
   HealthState,
   IntrospectScope,
   NoticeSeverity,
@@ -77,3 +80,5 @@ export type {
 
 export { IpcError } from "@/lib/ipc-error";
 export { Channel } from "@tauri-apps/api/core";
+/** The native "Save as" dialog; resolves with the chosen path, or null if cancelled. */
+export { save as showSaveDialog } from "@tauri-apps/plugin-dialog";

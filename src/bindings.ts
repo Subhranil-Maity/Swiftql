@@ -64,6 +64,11 @@ export const commands = {
 	 *  fails inside a failed transaction like any other statement.
 	 */
 	introspect: (sessionId: string, scope: IntrospectScope) => typedError<SchemaSnapshot_Serialize, DbError_Serialize>(__TAURI_INVOKE("introspect", { sessionId, scope })),
+	/**
+	 *  Writes `bytes` to `path`, replacing the file if it exists (the save dialog
+	 *  has already asked about overwriting).
+	 */
+	writeExportFile: (path: string, bytes: number[]) => typedError<null, string>(__TAURI_INVOKE("write_export_file", { path, bytes })),
 };
 
 /** Events */
@@ -120,11 +125,7 @@ export type Capabilities = {
 	connectionString: boolean,
 };
 
-export type Column = {
-	name: string,
-	dataType: string,
-	nullable: boolean,
-};
+export type Column = Column_Serialize | Column_Deserialize;
 
 export type ColumnMeta = ColumnMeta_Serialize | ColumnMeta_Deserialize;
 
@@ -142,6 +143,24 @@ export type ColumnMeta_Serialize = {
 	nativeType: string,
 	nullable: boolean | null,
 	sourceTable: TableRef | null,
+};
+
+export type Column_Deserialize = {
+	name: string,
+	dataType: string,
+	nullable: boolean,
+	comment?: string | null,
+	/**  The default expression as SQL, e.g. "nextval('users_id_seq'::regclass)". */
+	default?: string | null,
+};
+
+export type Column_Serialize = {
+	name: string,
+	dataType: string,
+	nullable: boolean,
+	comment: string | null,
+	/**  The default expression as SQL, e.g. "nextval('users_id_seq'::regclass)". */
+	default: string | null,
 };
 
 export type ConfigError = {
@@ -394,6 +413,19 @@ export type FieldSpec_Serialize = {
 	default: string | null,
 };
 
+export type FkAction = "noAction" | "restrict" | "cascade" | "setNull" | "setDefault";
+
+/**  `columns[i]` references `ref_columns[i]`. */
+export type ForeignKey = {
+	name: string,
+	columns: string[],
+	refSchema: string,
+	refTable: string,
+	refColumns: string[],
+	onDelete: FkAction,
+	onUpdate: FkAction,
+};
+
 export type GeneralSettings = GeneralSettings_Serialize | GeneralSettings_Deserialize;
 
 export type GeneralSettings_Deserialize = {
@@ -418,7 +450,19 @@ export type HealthState =
 /**  Needs a password that isn't saved, so it wasn't checked. */
 "needsPassword";
 
-export type IntrospectScope = { scope: "schemas" } | { scope: "tables"; schema: string } | { scope: "tableDetails"; schema: string; table: string } | { scope: "catalog" };
+export type Index = {
+	name: string,
+	/**  Column names in index order; expression parts are left out (see `definition`). */
+	columns: string[],
+	unique: boolean,
+	primary: boolean,
+	/**  Full `CREATE INDEX` statement as the server prints it. */
+	definition: string,
+};
+
+export type IntrospectScope = { scope: "schemas" } | { scope: "tables"; schema: string } | { scope: "tableDetails"; schema: string; table: string } | { scope: "catalog" } | 
+/**  Like Catalog, plus keys, indexes, comments and sizes (the Tables and Graph views). */
+{ scope: "model" };
 
 export type KeyringStatus = KeyringStatus_Serialize | KeyringStatus_Deserialize;
 
@@ -586,11 +630,27 @@ export type SchemaSnapshot_Deserialize = { kind: "schemas"; data: Schema_Deseria
 	schemas: Schema_Deserialize[],
 	/**  Schemas unqualified names resolve against, in order (existing ones only). */
 	searchPath: string[],
+} } | 
+/**
+ *  Same shape as Catalog; the optional table and column fields are filled
+ *  in where the driver knows them.
+ */
+{ kind: "model"; data: {
+	schemas: Schema_Deserialize[],
+	searchPath: string[],
 } };
 
 export type SchemaSnapshot_Serialize = { kind: "schemas"; data: Schema_Serialize[] } | { kind: "tables"; data: Table_Serialize[] } | { kind: "tableDetails"; data: Table_Serialize } | { kind: "catalog"; data: {
 	schemas: Schema_Serialize[],
 	/**  Schemas unqualified names resolve against, in order (existing ones only). */
+	searchPath: string[],
+} } | 
+/**
+ *  Same shape as Catalog; the optional table and column fields are filled
+ *  in where the driver knows them.
+ */
+{ kind: "model"; data: {
+	schemas: Schema_Serialize[],
 	searchPath: string[],
 } };
 
@@ -701,6 +761,10 @@ export type StoredTunnel_Serialize = {
 	auth: StoredSshAuth,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table = Table_Serialize | Table_Deserialize;
 
 export type TableKind = "table" | "view" | "materializedView" | "foreignTable" | "partitionedTable";
@@ -711,16 +775,42 @@ export type TableRef = {
 	column: string,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table_Deserialize = {
 	name: string,
 	kind: TableKind,
-	columns?: Column[] | null,
+	columns?: Column_Deserialize[] | null,
+	comment?: string | null,
+	/**  The planner's estimate, not a count. */
+	rowEstimate?: number | null,
+	/**  Table, indexes and TOAST together. */
+	sizeBytes?: number | null,
+	/**  Column names in key order; Some(empty) = loaded, no primary key. */
+	primaryKey?: string[] | null,
+	foreignKeys?: ForeignKey[] | null,
+	indexes?: Index[] | null,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table_Serialize = {
 	name: string,
 	kind: TableKind,
-	columns: Column[] | null,
+	columns: Column_Serialize[] | null,
+	comment: string | null,
+	/**  The planner's estimate, not a count. */
+	rowEstimate: number | null,
+	/**  Table, indexes and TOAST together. */
+	sizeBytes: number | null,
+	/**  Column names in key order; Some(empty) = loaded, no primary key. */
+	primaryKey: string[] | null,
+	foreignKeys: ForeignKey[] | null,
+	indexes: Index[] | null,
 };
 
 export type Target = Target_Serialize | Target_Deserialize;

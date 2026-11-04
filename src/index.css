@@ -16,6 +16,8 @@
     --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
     --color-success: var(--success);
     --color-warning: var(--warning);
+    --color-key: var(--key);
+    --color-ref: var(--ref);
     --color-conn-slate: var(--conn-slate);
     --color-conn-blue: var(--conn-blue);
     --color-conn-green: var(--conn-green);
@@ -113,6 +115,11 @@
     --syntax-number: oklch(0.56 0.14 55);
     --syntax-comment: oklch(0.6 0.01 250);
     --syntax-punctuation: oklch(0.45 0 0);
+    /* Schema glyphs: primary key (a quieter amber than --warning), foreign key (slate-blue). */
+    --key: oklch(0.66 0.11 75);
+    --ref: oklch(0.55 0.07 250);
+    /* Graph canvas dot grid. */
+    --canvas-dot: oklch(0.145 0 0 / 12%);
 }
 
 .dark {
@@ -161,6 +168,9 @@
     --syntax-number: oklch(0.8 0.12 65);
     --syntax-comment: oklch(0.6 0.01 250);
     --syntax-punctuation: oklch(0.72 0 0);
+    --key: oklch(0.76 0.1 75);
+    --ref: oklch(0.7 0.07 250);
+    --canvas-dot: oklch(0.985 0 0 / 12%);
 }
 
 @layer base {
@@ -178,4 +188,35 @@
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
     }
+}
+/* Graph: the dash that runs along highlighted foreign-key edges. */
+@keyframes fk-dash {
+    to {
+        stroke-dashoffset: -16;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .fk-edge-animated {
+        animation: none !important;
+    }
+}
+
+/* React Flow (the Graph view) themed with the app's tokens; follows .dark on <html>. */
+.swiftql-flow {
+    --xy-background-color: var(--background);
+    --xy-background-pattern-color: var(--canvas-dot);
+    --xy-minimap-background-color: var(--background);
+    --xy-minimap-mask-background-color: color-mix(in oklch, var(--muted) 75%, transparent);
+    --xy-minimap-mask-stroke-color: var(--border);
+    --xy-minimap-node-background-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent);
+    --xy-controls-button-background-color: var(--background);
+    --xy-controls-button-background-color-hover: var(--muted);
+    --xy-controls-button-color: var(--foreground);
+    --xy-controls-button-color-hover: var(--foreground);
+    --xy-controls-button-border-color: var(--border);
+    --xy-controls-box-shadow: 0 0 0 1px var(--border);
+    --xy-selection-background-color: color-mix(in oklch, var(--tab-accent) 10%, transparent);
+    --xy-selection-border: 1px dashed var(--tab-accent);
+    --xy-attribution-background-color: transparent;
 }

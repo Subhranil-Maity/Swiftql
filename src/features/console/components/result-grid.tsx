@@ -1,25 +1,46 @@
 import "@glideapps/glide-data-grid/dist/index.css";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
+  CompactSelection,
   DataEditor,
   type GridCell,
   GridCellKind,
   type GridColumn,
-  type GridMouseEventArgs,
+  type GridSelection,
   type Item,
 } from "@glideapps/glide-data-grid";
+import { toast } from "sonner";
 
-import { gridTheme } from "@/features/console/lib/grid-theme";
+import { CellViewerDialog, type ViewedCell } from "@/features/console/components/cell-viewer-dialog";
+import { ResultFooter } from "@/features/console/components/result-footer";
+import { ResultToolbar } from "@/features/console/components/result-toolbar";
+import { useColumnVisibility } from "@/features/console/hooks/use-column-visibility";
+import { useColumnWidths } from "@/features/console/hooks/use-column-widths";
+import { useGridSort } from "@/features/console/hooks/use-grid-sort";
+import { HEADER_HEIGHT, makeDrawHeader } from "@/features/console/lib/draw-header";
+import { gridPalette } from "@/features/console/lib/grid-theme";
 import { formatCell } from "@/features/console/model/cell-format";
+import {
+  type ExportFormat,
+  type ExportSlice,
+  FORMAT_EXTENSIONS,
+  FORMAT_LABELS,
+  serialize,
+} from "@/features/console/model/result-export";
 import type { StatementResult } from "@/features/console/model/run";
-import type { ColumnMeta, DbValue } from "@/lib/ipc";
+import { plural } from "@/lib/format-count";
+import type { DbValue } from "@/lib/ipc";
+import { errorMessage } from "@/lib/ipc-error";
+import { saveFile } from "@/lib/save-file";
 import { useIsDark } from "@/stores/theme";
 
-const MIN_WIDTH = 64;
-const MAX_WIDTH = 360;
-/** Rows looked at to size a column. */
-const SAMPLE_ROWS = 50;
+const NULL_VALUE: DbValue = { type: "null" };
+
+const EMPTY_SELECTION: GridSelection = {
+  columns: CompactSelection.empty(),
+  rows: CompactSelection.empty(),
+};
 
 /** Fonts are drawn on canvas, so the grid redraws once they've loaded. */
 function useFontsReady(): boolean {
@@ -30,127 +51,178 @@ function useFontsReady(): boolean {
   return ready;
 }
 
-let measurer: CanvasRenderingContext2D | null = null;
-function textWidth(text: string, font: string): number {
-  measurer ??= document.createElement("canvas").getContext("2d");
-  if (!measurer) return text.length * 8;
-  measurer.font = font;
-  return measurer.measureText(text).width;
+/** Display rows and source columns the selection covers; null when it's a single cell or nothing. */
+function selectionCells(
+  selection: GridSelection,
+  visible: number[],
+  rowCount: number,
+): { rows: number[]; columns: number[] } | null {
+  const all = (n: number) => Array.from({ length: n }, (_, i) => i);
+  if (selection.rows.length > 0) return { rows: selection.rows.toArray(), columns: visible };
+  if (selection.columns.length > 0) {
+    return { rows: all(rowCount), columns: selection.columns.toArray().map((c) => visible[c]) };
+  }
+  const range = selection.current?.range;
+  if (!range || range.width * range.height <= 1) return null;
+  return {
+    rows: all(range.height).map((i) => range.y + i),
+    columns: visible.slice(range.x, range.x + range.width),
+  };
 }
 
-/** Initial widths from the header and the first rows. */
-function autoWidths(columns: ColumnMeta[], rows: DbValue[][]): number[] {
-  const sample = rows.slice(0, SAMPLE_ROWS);
-  return columns.map((column, i) => {
-    let widest = textWidth(column.name, "500 12px 'Geist Variable', sans-serif") + 8;
-    for (const row of sample) {
-      const text = formatCell(row[i] ?? { type: "null" }).display.slice(0, 80);
-      widest = Math.max(widest, textWidth(text, "12.5px 'Geist Mono Variable', monospace"));
-    }
-    return Math.round(Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, widest + 24)));
-  });
-}
-
-/** One statement's rows: read-only, virtualized, copyable with Ctrl+C. */
+/** One statement's rows: read-only, virtualized, sortable, copyable with Ctrl+C, searchable with Ctrl+F. */
 export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowLimit: number }) {
   const isDark = useIsDark();
   const fontsReady = useFontsReady();
-  // Re-read the CSS variables when the theme or fonts change.
-  const theme = useMemo(() => gridTheme(), [isDark, fontsReady]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Read where --tab-accent (the connection colour) is set, again when the theme or fonts change.
+  const [palette, setPalette] = useState(() => gridPalette());
+  useLayoutEffect(() => {
+    setPalette(gridPalette(containerRef.current ?? undefined));
+  }, [isDark, fontsReady]);
+  const theme = palette.theme;
 
-  const columns = result.columns ?? [];
+  const columns = useMemo(() => result.columns ?? [], [result.columns]);
   const rows = result.rows;
   const hasRows = rows.length > 0;
 
-  // Sized once rows arrive; the user's resizing wins after that.
-  const [resized, setResized] = useState<Record<number, number>>({});
-  useEffect(() => setResized({}), [columns]);
-  // Sized from the first rows only, not on every batch.
-  const widths = useMemo(() => autoWidths(columns, rows), [columns, hasRows, fontsReady]);
+  const { sort, order, cycle, clear } = useGridSort(rows);
+  const { hidden, visible, toggle, showAll } = useColumnVisibility(columns.length);
+  const { widthOf, resize } = useColumnWidths(columns, rows, fontsReady);
+  const [selection, setSelection] = useState<GridSelection>(EMPTY_SELECTION);
+  const [viewed, setViewed] = useState<ViewedCell | null>(null);
+  // The selection is in display positions, which sorting and hiding columns reshuffle.
+  useEffect(() => setSelection(EMPTY_SELECTION), [visible, sort]);
+
+  /** The fetched row shown at display position `row`. */
+  const rowAt = useCallback((row: number) => rows[order ? order[row] : row], [rows, order]);
 
   const gridColumns = useMemo<GridColumn[]>(
     () =>
-      columns.map((column, i) => ({
+      visible.map((i) => ({
         id: String(i),
-        title: column.name,
-        width: resized[i] ?? widths[i],
+        title: columns[i].name,
+        width: widthOf(i),
       })),
-    [columns, widths, resized],
+    [visible, columns, widthOf],
+  );
+
+  const drawHeader = useMemo(
+    () => makeDrawHeader(columns.map((c) => c.nativeType), sort, palette),
+    [columns, sort, palette],
   );
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
-      const cell = formatCell(rows[row]?.[col] ?? { type: "null" });
+      const cell = formatCell(rowAt(row)?.[visible[col]] ?? NULL_VALUE);
       return {
         kind: GridCellKind.Text,
         data: cell.copy,
         displayData: cell.display,
         copyData: cell.copy,
-        // TODO: a read-only overlay to see long values in full (needs glide's #portal element)
+        // The cell viewer (double-click / Enter) shows long values instead.
         allowOverlay: false,
         readonly: true,
         contentAlign: cell.kind === "number" ? "right" : "left",
-        themeOverride: cell.kind === "null" ? { textDark: theme.textLight } : undefined,
+        themeOverride:
+          cell.kind === "null"
+            ? { textDark: theme.textLight, baseFontStyle: "italic 12.5px" }
+            : undefined,
       };
     },
-    [rows, theme],
+    [rowAt, visible, theme],
   );
 
-  // The header's native type, shown on hover.
-  const [header, setHeader] = useState<{ text: string; x: number; y: number } | null>(null);
-  const onItemHovered = useCallback(
-    (args: GridMouseEventArgs) => {
-      if (args.kind !== "header") return setHeader(null);
-      const column = columns[args.location[0]];
-      if (!column) return setHeader(null);
-      setHeader({
-        text: column.nativeType,
-        x: args.bounds.x + 8,
-        y: args.bounds.y + args.bounds.height + 4,
-      });
-    },
-    [columns],
+  const getRowThemeOverride = useCallback(
+    (row: number) => (row % 2 === 1 ? { bgCell: palette.zebra } : undefined),
+    [palette],
   );
+
+  /** The selection (or, without one, every row) in display order, visible columns only. */
+  const slice = (useSelection: boolean): ExportSlice => {
+    const cells = useSelection ? selectionCells(selection, visible, rows.length) : null;
+    const rowIndices = cells?.rows ?? Array.from({ length: rows.length }, (_, i) => i);
+    const columnIndices = cells?.columns ?? visible;
+    return {
+      columns: columnIndices.map((i) => columns[i]),
+      rows: rowIndices.map((r) => columnIndices.map((c) => rowAt(r)?.[c] ?? NULL_VALUE)),
+    };
+  };
+  const hasSelection = selectionCells(selection, visible, rows.length) !== null;
+
+  const copyAs = async (format: ExportFormat) => {
+    const part = slice(true);
+    try {
+      await navigator.clipboard.writeText(serialize(part, format));
+      toast.success(`Copied ${plural(part.rows.length, "row")} as ${FORMAT_LABELS[format]}`);
+    } catch {
+      toast.error("Couldn't copy to the clipboard");
+    }
+  };
+
+  const exportAs = async (format: ExportFormat) => {
+    const ext = FORMAT_EXTENSIONS[format];
+    try {
+      const path = await saveFile(`result.${ext}`, serialize(slice(false), format), [
+        { name: FORMAT_LABELS[format], extensions: [ext] },
+      ]);
+      if (path) toast.success(`Saved ${plural(rows.length, "row")}`, { description: path });
+    } catch (error) {
+      toast.error("Couldn't save the export", { description: errorMessage(error) });
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="relative min-h-0 flex-1" onMouseLeave={() => setHeader(null)}>
+      <ResultToolbar
+        rowCount={rows.length}
+        columns={columns}
+        sort={sort}
+        onClearSort={clear}
+        hidden={hidden}
+        onToggleColumn={toggle}
+        onShowAllColumns={showAll}
+        hasSelection={hasSelection}
+        onCopy={(format) => void copyAs(format)}
+        onExport={(format) => void exportAs(format)}
+      />
+      <div ref={containerRef} className="relative min-h-0 flex-1">
         <DataEditor
           columns={gridColumns}
           rows={rows.length}
           getCellContent={getCellContent}
           getCellsForSelection
+          getRowThemeOverride={getRowThemeOverride}
+          drawHeader={drawHeader}
           theme={theme}
           width="100%"
           height="100%"
           rowHeight={26}
-          headerHeight={30}
+          headerHeight={HEADER_HEIGHT}
           rowMarkers="number"
           smoothScrollX
           smoothScrollY
-          onItemHovered={onItemHovered}
-          onColumnResize={(_, size, index) => setResized((r) => ({ ...r, [index]: size }))}
+          keybindings={{ search: true }}
+          gridSelection={selection}
+          onGridSelectionChange={setSelection}
+          cellActivationBehavior="double-click"
+          onCellActivated={([col, row]) => {
+            const column = columns[visible[col]];
+            if (column) setViewed({ column, value: rowAt(row)?.[visible[col]] ?? NULL_VALUE, row });
+          }}
+          onHeaderClicked={(col) => {
+            if (visible[col] !== undefined) cycle(visible[col]);
+          }}
+          onColumnResize={(column, size) => resize(Number(column.id), size)}
         />
         {!hasRows && result.status !== "running" && (
-          <p className="pointer-events-none absolute inset-x-0 top-14 text-center text-muted-foreground">
+          <p className="pointer-events-none absolute inset-x-0 top-16 text-center text-muted-foreground">
             No rows
           </p>
         )}
-        {header && (
-          <div
-            role="tooltip"
-            className="pointer-events-none fixed z-50 rounded-md bg-foreground px-2 py-1 font-mono text-xs text-background"
-            style={{ left: header.x, top: header.y }}
-          >
-            {header.text}
-          </div>
-        )}
       </div>
-      {result.truncated && (
-        <p className="shrink-0 border-t px-3 py-1.5 text-xs text-muted-foreground">
-          First {rowLimit.toLocaleString()} rows. The rest weren't fetched.
-        </p>
-      )}
+      <ResultFooter truncated={result.truncated} rowLimit={rowLimit} sorted={sort !== null} />
+      <CellViewerDialog cell={viewed} onClose={() => setViewed(null)} />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import { codePointToOffset } from "@/features/console/lib/text-offsets";
 import { api, Channel, type DbError, IpcError, type RunEvent } from "@/lib/ipc";
 import { useQueryRunsStore } from "@/stores/query-runs";
 import { useSchemaCatalogStore } from "@/stores/schema-catalog";
+import { useSchemaModelStore } from "@/stores/schema-model";
 import { useSessionsStore } from "@/stores/sessions";
 
 /** Rows fetched per result; the rest is cancelled on the server. */
@@ -91,7 +92,8 @@ function toRunError(error: DbError | IpcError, view: EditorView | undefined, pie
   };
 }
 
-async function run(tabId: string, sessionId: string, driverId: string, kind: RunKind) {
+/** Runs the tab's statement or script on the session; does nothing while the session is busy. */
+export async function run(tabId: string, sessionId: string, driverId: string, kind: RunKind) {
   const store = useQueryRunsStore.getState();
   if (store.runningTab[sessionId]) return; // one run per session; the button says so
   const view = editorFor(tabId);
@@ -140,10 +142,11 @@ async function run(tabId: string, sessionId: string, driverId: string, kind: Run
     }
     useQueryRunsStore.getState().finish(tabId, sessionId, summary);
     useSessionsStore.getState().setTxStatus(sessionId, summary.txStatus);
-    // Keep autocomplete in step with tables created or changed by this run.
+    // Keep autocomplete and the Tables / Graph views in step with this run's DDL.
     const ran = list.slice(0, summary.executed);
     if (ran.some((p) => CHANGES_STRUCTURE.test(p.sql))) {
       void useSchemaCatalogStore.getState().refresh(sessionId);
+      void useSchemaModelStore.getState().refreshIfLoaded(sessionId);
     }
   } catch (error) {
     useQueryRunsStore.getState().fail(tabId, sessionId, toRunError(IpcError.from(error), undefined));

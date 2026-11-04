@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import {
   type ConsoleTabSet,
+  type TabInit,
   createTab,
   emptyTabSet,
   parseTabSet,
@@ -19,7 +20,8 @@ interface ConsoleTabsState {
   byConnection: Record<string, ConsoleTabSet>;
   /** Reads the saved tabs once per connection; later calls do nothing. */
   load: (connectionId: string) => Promise<void>;
-  openTab: (connectionId: string) => void;
+  /** Opens and activates a tab; returns its id, or null while the tabs are still loading. */
+  openTab: (connectionId: string, init?: TabInit) => string | null;
   /** Activates the neighbour; closing the last tab leaves a fresh one. */
   closeTab: (connectionId: string, tabId: string) => void;
   selectTab: (connectionId: string, tabId: string) => void;
@@ -75,11 +77,16 @@ export const useConsoleTabsStore = create<ConsoleTabsState>()((set, get) => {
       }));
     },
 
-    openTab: (connectionId) =>
+    openTab: (connectionId, init) => {
+      if (!get().byConnection[connectionId]) return null;
+      let id: string | null = null;
       update(connectionId, (t) => {
-        const tab = createTab(t.counter + 1);
+        const tab = createTab(t.counter + 1, init);
+        id = tab.id;
         return { tabs: [...t.tabs, tab], activeId: tab.id, counter: t.counter + 1 };
-      }),
+      });
+      return id;
+    },
 
     closeTab: (connectionId, tabId) =>
       update(connectionId, (t) => {

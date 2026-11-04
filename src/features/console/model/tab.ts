@@ -14,8 +14,11 @@ export type ConsoleTabSet = {
   counter: number;
 };
 
-export function createTab(n: number): ConsoleTab {
-  return { id: crypto.randomUUID(), title: `Query ${n}`, sql: "" };
+/** What a new tab starts with; the default is an empty "Query N". */
+export type TabInit = { title?: string; sql?: string };
+
+export function createTab(n: number, init: TabInit = {}): ConsoleTab {
+  return { id: crypto.randomUUID(), title: init.title ?? `Query ${n}`, sql: init.sql ?? "" };
 }
 
 export function emptyTabSet(): ConsoleTabSet {
