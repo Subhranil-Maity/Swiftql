@@ -9,6 +9,7 @@ import {
   type GridColumn,
   type GridSelection,
   type Item,
+  type Rectangle,
 } from "@glideapps/glide-data-grid";
 import { toast } from "sonner";
 
@@ -18,24 +19,21 @@ import { ResultToolbar } from "@/features/console/components/result-toolbar";
 import { useColumnVisibility } from "@/features/console/hooks/use-column-visibility";
 import { useColumnWidths } from "@/features/console/hooks/use-column-widths";
 import { useGridSort } from "@/features/console/hooks/use-grid-sort";
+import { fetchRange, toRanges, useResultPages } from "@/features/console/hooks/use-result-pages";
 import { HEADER_HEIGHT, makeDrawHeader } from "@/features/console/lib/draw-header";
 import { gridPalette } from "@/features/console/lib/grid-theme";
-import { formatCell } from "@/features/console/model/cell-format";
-import {
-  type ExportFormat,
-  type ExportSlice,
-  FORMAT_EXTENSIONS,
-  FORMAT_LABELS,
-  serialize,
-} from "@/features/console/model/result-export";
+import { useCellFormatter } from "@/features/console/model/cell-format";
+import { type ExportFormat, FORMAT_EXTENSIONS, FORMAT_LABELS } from "@/features/console/model/result-export";
 import type { StatementResult } from "@/features/console/model/run";
 import { plural } from "@/lib/format-count";
-import type { DbValue } from "@/lib/ipc";
+import { api, type DbValue, type ResultSelection } from "@/lib/ipc";
 import { errorMessage } from "@/lib/ipc-error";
-import { saveFile } from "@/lib/save-file";
 import { useIsDark } from "@/stores/theme";
 
 const NULL_VALUE: DbValue = { type: "null" };
+
+/** Most rows Ctrl+C copies through the grid; Copy as handles more. */
+const MAX_GRID_COPY_ROWS = 100_000;
 
 const EMPTY_SELECTION: GridSelection = {
   columns: CompactSelection.empty(),
@@ -51,29 +49,29 @@ function useFontsReady(): boolean {
   return ready;
 }
 
-/** Display rows and source columns the selection covers; null when it's a single cell or nothing. */
-function selectionCells(
-  selection: GridSelection,
-  visible: number[],
-  rowCount: number,
-): { rows: number[]; columns: number[] } | null {
-  const all = (n: number) => Array.from({ length: n }, (_, i) => i);
-  if (selection.rows.length > 0) return { rows: selection.rows.toArray(), columns: visible };
+/** The part of the result a selection covers, in display rows and source columns; null for a single cell or nothing. */
+function selectionOf(selection: GridSelection, visible: number[]): ResultSelection | null {
+  if (selection.rows.length > 0) return { rows: toRanges(selection.rows.toArray()), columns: visible };
   if (selection.columns.length > 0) {
-    return { rows: all(rowCount), columns: selection.columns.toArray().map((c) => visible[c]) };
+    return { rows: null, columns: selection.columns.toArray().map((c) => visible[c]) };
   }
   const range = selection.current?.range;
   if (!range || range.width * range.height <= 1) return null;
   return {
-    rows: all(range.height).map((i) => range.y + i),
+    rows: [[range.y, range.y + range.height]],
     columns: visible.slice(range.x, range.x + range.width),
   };
 }
 
-/** One statement's rows: read-only, virtualized, sortable, copyable with Ctrl+C, searchable with Ctrl+F. */
-export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowLimit: number }) {
+/**
+ * One statement's rows: read-only, virtualized, paged from the backend as it
+ * scrolls, sortable over the whole result, copyable with Ctrl+C, searchable
+ * with Ctrl+F (over the fetched rows).
+ */
+export function ResultGrid({ result, sessionId }: { result: StatementResult; sessionId: string }) {
   const isDark = useIsDark();
   const fontsReady = useFontsReady();
+  const formatCell = useCellFormatter();
   const containerRef = useRef<HTMLDivElement>(null);
   // Read where --tab-accent (the connection colour) is set, again when the theme or fonts change.
   const [palette, setPalette] = useState(() => gridPalette());
@@ -83,19 +81,16 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
   const theme = palette.theme;
 
   const columns = useMemo(() => result.columns ?? [], [result.columns]);
-  const rows = result.rows;
-  const hasRows = rows.length > 0;
+  const pages = useResultPages(sessionId, result);
+  const { rowAt, total, loading } = pages;
 
-  const { sort, order, cycle, clear } = useGridSort(rows);
+  const { sort, sorting, cycle, clear } = useGridSort(sessionId, result.resultId, loading, pages.reset);
   const { hidden, visible, toggle, showAll } = useColumnVisibility(columns.length);
-  const { widthOf, resize } = useColumnWidths(columns, rows, fontsReady);
+  const { widthOf, resize } = useColumnWidths(columns, result.rows, fontsReady);
   const [selection, setSelection] = useState<GridSelection>(EMPTY_SELECTION);
   const [viewed, setViewed] = useState<ViewedCell | null>(null);
   // The selection is in display positions, which sorting and hiding columns reshuffle.
   useEffect(() => setSelection(EMPTY_SELECTION), [visible, sort]);
-
-  /** The fetched row shown at display position `row`. */
-  const rowAt = useCallback((row: number) => rows[order ? order[row] : row], [rows, order]);
 
   const gridColumns = useMemo<GridColumn[]>(
     () =>
@@ -112,9 +107,9 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
     [columns, sort, palette],
   );
 
-  const getCellContent = useCallback(
-    ([col, row]: Item): GridCell => {
-      const cell = formatCell(rowAt(row)?.[visible[col]] ?? NULL_VALUE);
+  const cellFor = useCallback(
+    (value: DbValue): GridCell => {
+      const cell = formatCell(value);
       return {
         kind: GridCellKind.Text,
         data: cell.copy,
@@ -125,12 +120,34 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
         readonly: true,
         contentAlign: cell.kind === "number" ? "right" : "left",
         themeOverride:
-          cell.kind === "null"
-            ? { textDark: theme.textLight, baseFontStyle: "italic 12.5px" }
-            : undefined,
+          cell.kind === "null" ? { textDark: theme.textLight, baseFontStyle: "italic 12.5px" } : undefined,
       };
     },
-    [rowAt, visible, theme],
+    [formatCell, theme],
+  );
+
+  const getCellContent = useCallback(
+    ([col, row]: Item): GridCell => {
+      const values = rowAt(row);
+      if (!values) return { kind: GridCellKind.Loading, allowOverlay: false };
+      return cellFor(values[visible[col]] ?? NULL_VALUE);
+    },
+    [rowAt, visible, cellFor],
+  );
+
+  /** Ctrl+C over a range: the rows may not be fetched yet, so ask the backend. */
+  const getCellsForSelection = useCallback(
+    (rect: Rectangle) => async () => {
+      if (!result.resultId) return [];
+      const height = Math.min(rect.height, MAX_GRID_COPY_ROWS);
+      if (height < rect.height) {
+        toast.info(`Copied the first ${MAX_GRID_COPY_ROWS.toLocaleString()} rows; use Copy as for more`);
+      }
+      const rows = await fetchRange(sessionId, result.resultId, rect.y, rect.y + height);
+      const cols = visible.slice(rect.x, rect.x + rect.width);
+      return rows.map((values) => cols.map((c) => cellFor(values[c] ?? NULL_VALUE)));
+    },
+    [sessionId, result.resultId, visible, cellFor],
   );
 
   const getRowThemeOverride = useCallback(
@@ -138,35 +155,33 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
     [palette],
   );
 
-  /** The selection (or, without one, every row) in display order, visible columns only. */
-  const slice = (useSelection: boolean): ExportSlice => {
-    const cells = useSelection ? selectionCells(selection, visible, rows.length) : null;
-    const rowIndices = cells?.rows ?? Array.from({ length: rows.length }, (_, i) => i);
-    const columnIndices = cells?.columns ?? visible;
-    return {
-      columns: columnIndices.map((i) => columns[i]),
-      rows: rowIndices.map((r) => columnIndices.map((c) => rowAt(r)?.[c] ?? NULL_VALUE)),
-    };
-  };
-  const hasSelection = selectionCells(selection, visible, rows.length) !== null;
+  const part = selectionOf(selection, visible);
+  const whole: ResultSelection = { rows: null, columns: visible };
 
   const copyAs = async (format: ExportFormat) => {
-    const part = slice(true);
+    if (!result.resultId) return;
+    const target = part ?? whole;
     try {
-      await navigator.clipboard.writeText(serialize(part, format));
-      toast.success(`Copied ${plural(part.rows.length, "row")} as ${FORMAT_LABELS[format]}`);
-    } catch {
-      toast.error("Couldn't copy to the clipboard");
+      const text = await api.copyResult(sessionId, result.resultId, format, target);
+      await navigator.clipboard.writeText(text);
+      const count = target.rows ? target.rows.reduce((n, [s, e]) => n + (e - s), 0) : total;
+      toast.success(`Copied ${plural(count, "row")} as ${FORMAT_LABELS[format]}`);
+    } catch (error) {
+      toast.error("Couldn't copy", { description: errorMessage(error) });
     }
   };
 
   const exportAs = async (format: ExportFormat) => {
-    const ext = FORMAT_EXTENSIONS[format];
+    if (!result.resultId) return;
     try {
-      const path = await saveFile(`result.${ext}`, serialize(slice(false), format), [
-        { name: FORMAT_LABELS[format], extensions: [ext] },
-      ]);
-      if (path) toast.success(`Saved ${plural(rows.length, "row")}`, { description: path });
+      const outcome = await api.exportResult(
+        sessionId,
+        result.resultId,
+        format,
+        whole,
+        `result.${FORMAT_EXTENSIONS[format]}`,
+      );
+      if (outcome) toast.success(`Saved ${plural(outcome.rows, "row")}`, { description: outcome.path });
     } catch (error) {
       toast.error("Couldn't save the export", { description: errorMessage(error) });
     }
@@ -175,23 +190,26 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ResultToolbar
-        rowCount={rows.length}
+        rowCount={total}
+        loading={loading}
         columns={columns}
         sort={sort}
+        sorting={sorting}
         onClearSort={clear}
         hidden={hidden}
         onToggleColumn={toggle}
         onShowAllColumns={showAll}
-        hasSelection={hasSelection}
+        hasSelection={part !== null}
         onCopy={(format) => void copyAs(format)}
         onExport={(format) => void exportAs(format)}
       />
       <div ref={containerRef} className="relative min-h-0 flex-1">
         <DataEditor
           columns={gridColumns}
-          rows={rows.length}
+          rows={total}
           getCellContent={getCellContent}
-          getCellsForSelection
+          getCellsForSelection={getCellsForSelection}
+          onVisibleRegionChanged={pages.onVisibleRegionChanged}
           getRowThemeOverride={getRowThemeOverride}
           drawHeader={drawHeader}
           theme={theme}
@@ -208,20 +226,21 @@ export function ResultGrid({ result, rowLimit }: { result: StatementResult; rowL
           cellActivationBehavior="double-click"
           onCellActivated={([col, row]) => {
             const column = columns[visible[col]];
-            if (column) setViewed({ column, value: rowAt(row)?.[visible[col]] ?? NULL_VALUE, row });
+            const values = rowAt(row);
+            if (column && values) setViewed({ column, value: values[visible[col]] ?? NULL_VALUE, row });
           }}
           onHeaderClicked={(col) => {
             if (visible[col] !== undefined) cycle(visible[col]);
           }}
           onColumnResize={(column, size) => resize(Number(column.id), size)}
         />
-        {!hasRows && result.status !== "running" && (
+        {total === 0 && result.status !== "running" && (
           <p className="pointer-events-none absolute inset-x-0 top-16 text-center text-muted-foreground">
             No rows
           </p>
         )}
       </div>
-      <ResultFooter truncated={result.truncated} rowLimit={rowLimit} sorted={sort !== null} />
+      <ResultFooter state={result.resultState} total={total} error={pages.error} />
       <CellViewerDialog cell={viewed} onClose={() => setViewed(null)} />
     </div>
   );

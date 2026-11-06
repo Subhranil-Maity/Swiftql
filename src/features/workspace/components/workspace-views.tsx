@@ -3,6 +3,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useState } from "re
 import { Spinner } from "@/components/ui/spinner";
 import { colorVar } from "@/features/connections/model/colors";
 import { ConsoleView } from "@/features/console/components/console-view";
+import { NotificationsView } from "@/features/notifications/components/notifications-view";
 import { TablesView } from "@/features/tables/components/tables-view";
 import { useWorkspace } from "@/features/workspace/model/workspace-context";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,7 @@ function Loading() {
 }
 
 /**
- * The console, Tables and Graph views. Each mounts the first time it's shown
+ * The console, Tables, Graph and Notifications views. Each mounts the first time it's shown
  * and then stays mounted but hidden, so editor undo history and the graph's
  * viewport survive switching.
  */
@@ -69,6 +70,7 @@ export function WorkspaceViews() {
           <GraphView active={current === "graph"} />
         </Suspense>,
       )}
+      {pane("notifications", "Notifications", <NotificationsView active={current === "notifications"} />)}
     </div>
   );
 }

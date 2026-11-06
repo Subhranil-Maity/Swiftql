@@ -1,30 +1,57 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
+import { toast } from "sonner";
 
-import { type SortState, sortRows } from "@/features/console/model/row-sort";
-import type { DbValue } from "@/lib/ipc";
+import type { SortState } from "@/features/console/model/row-sort";
+import { api } from "@/lib/ipc";
+import { errorMessage } from "@/lib/ipc-error";
 
 /**
- * Client-side sort of the fetched rows. Clicking a column cycles
- * ascending → descending → unsorted. `order` maps display row → fetched row;
- * null while unsorted.
+ * Sorting a held result in the backend, over every held row. Clicking a
+ * column cycles ascending → descending → unsorted. `onSorted` runs once the
+ * backend has the new order, so cached pages can be dropped.
  */
-export function useGridSort(rows: DbValue[][]) {
+export function useGridSort(
+  sessionId: string,
+  resultId: string | undefined,
+  loading: boolean,
+  onSorted: (sorted: boolean) => void,
+) {
   const [sort, setSort] = useState<SortState>(null);
+  const [sorting, setSorting] = useState(false);
+
+  const apply = useCallback(
+    async (next: SortState) => {
+      if (!resultId) return;
+      setSorting(true);
+      try {
+        await api.sortResult(sessionId, resultId, next);
+        setSort(next);
+        onSorted(next !== null);
+      } catch (error) {
+        toast.error("Couldn't sort the result", { description: errorMessage(error) });
+      } finally {
+        setSorting(false);
+      }
+    },
+    [sessionId, resultId, onSorted],
+  );
 
   const cycle = useCallback(
-    (column: number) =>
-      setSort((s) => {
-        if (s?.column !== column) return { column, direction: "asc" };
-        return s.direction === "asc" ? { column, direction: "desc" } : null;
-      }),
-    [],
+    (column: number) => {
+      if (loading) {
+        toast.info("Sorting is available once all rows are loaded");
+        return;
+      }
+      if (sorting) return;
+      let next: SortState;
+      if (sort?.column !== column) next = { column, direction: "asc" };
+      else next = sort.direction === "asc" ? { column, direction: "desc" } : null;
+      void apply(next);
+    },
+    [loading, sorting, sort, apply],
   );
 
-  // Rows still streaming in re-sort with each batch.
-  const order = useMemo(
-    () => (sort ? sortRows(rows, sort.column, sort.direction) : null),
-    [rows, sort],
-  );
+  const clear = useCallback(() => void apply(null), [apply]);
 
-  return { sort, order, cycle, clear: useCallback(() => setSort(null), []) };
+  return { sort, sorting, cycle, clear };
 }

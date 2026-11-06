@@ -1,6 +1,9 @@
 // How a database value reads in the results grid: close to the text psql
 // prints, so what you see is what the server would say.
-import type { DbValue } from "@/lib/ipc";
+import { useMemo } from "react";
+
+import type { DbValue, GeneralSettings } from "@/lib/ipc";
+import { useSettingsStore } from "@/stores/settings";
 
 export type CellKind = "null" | "number" | "bool" | "text";
 
@@ -66,8 +69,8 @@ export function valueText(value: DbValue): string {
     case "int":
       return String(value.value);
     case "float":
-      // TODO: NaN and ±Infinity arrive as null (JSON has no such numbers); send them as text
-      return value.value === null ? "NaN" : String(value.value);
+      // NaN and ±Infinity arrive as the text Postgres prints.
+      return typeof value.value === "string" ? value.value : value.value === null ? "NaN" : String(value.value);
     case "decimal":
     case "bigInt":
     case "text":
@@ -137,4 +140,76 @@ export function formatCell(value: DbValue): FormattedCell {
     display = `${display.slice(0, 1000)}…`; // the grid shows one line; no need to draw more
   }
   return { display: display.replace(/\r?\n/g, " ↵ "), copy, kind: kindOf(value) };
+}
+
+/** How cells look, from Settings → Appearance. */
+export type DisplayOptions = Pick<
+  GeneralSettings,
+  "nullDisplay" | "booleanDisplay" | "timestampDisplay" | "numberGrouping"
+>;
+
+const DEFAULT_DISPLAY: DisplayOptions = {
+  nullDisplay: "NULL",
+  booleanDisplay: "text",
+  timestampDisplay: "iso",
+  numberGrouping: false,
+};
+
+const grouping = new Intl.NumberFormat(undefined, { maximumFractionDigits: 20 });
+
+/** Thousands separators in an integer or decimal string, keeping every digit. */
+function groupDigits(text: string): string {
+  const match = /^(-?)(\d+)(\.\d+)?$/.exec(text);
+  if (!match) return text;
+  const [, sign, int, frac = ""] = match;
+  const grouped = int.length <= 15 ? grouping.format(Number(int)) : int.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${sign}${grouped}${frac}`;
+}
+
+/** The text a cell shows, with the display settings applied; copy text stays as Postgres prints it. */
+function displayText(value: DbValue, copy: string, options: DisplayOptions): string {
+  switch (value.type) {
+    case "null":
+      return options.nullDisplay;
+    case "bool":
+      if (options.booleanDisplay === "short") return value.value ? "t" : "f";
+      if (options.booleanDisplay === "symbol") return value.value ? "✓" : "✗";
+      return copy;
+    case "int":
+    case "decimal":
+    case "bigInt":
+      return options.numberGrouping ? groupDigits(copy) : copy;
+    case "float":
+      return options.numberGrouping && typeof value.value === "number" && Number.isFinite(value.value)
+        ? grouping.format(value.value)
+        : copy;
+    case "timestampTz":
+      if (options.timestampDisplay === "local") {
+        const date = new Date(value.value);
+        if (!Number.isNaN(date.getTime())) return date.toLocaleString();
+      }
+      return copy;
+    default:
+      return copy;
+  }
+}
+
+/** `formatCell` with display options. */
+export function formatCellWith(value: DbValue, options: DisplayOptions): FormattedCell {
+  const cell = formatCell(value);
+  if (value.type === "bytes" || cell.display.endsWith("…")) return cell; // previews already shortened
+  return { ...cell, display: displayText(value, cell.copy, options).replace(/\r?\n/g, " ↵ ") };
+}
+
+/** A cell formatter following the current display settings. */
+export function useCellFormatter(): (value: DbValue) => FormattedCell {
+  const general = useSettingsStore((s) => s.settings?.general);
+  const nullDisplay = general?.nullDisplay ?? DEFAULT_DISPLAY.nullDisplay;
+  const booleanDisplay = general?.booleanDisplay ?? DEFAULT_DISPLAY.booleanDisplay;
+  const timestampDisplay = general?.timestampDisplay ?? DEFAULT_DISPLAY.timestampDisplay;
+  const numberGrouping = general?.numberGrouping ?? DEFAULT_DISPLAY.numberGrouping;
+  return useMemo(() => {
+    const options = { nullDisplay, booleanDisplay, timestampDisplay, numberGrouping };
+    return (value: DbValue) => formatCellWith(value, options);
+  }, [nullDisplay, booleanDisplay, timestampDisplay, numberGrouping]);
 }

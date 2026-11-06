@@ -5,13 +5,16 @@ use std::{
     sync::RwLock,
 };
 
+pub use driver_core::connect::HostKeyPolicy;
+use driver_core::connect::SslMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::{ConfigError, ConfigResult};
 
-/// Bump when the file layout changes and add a migration in `SettingsStore::load`.
-pub const SETTINGS_VERSION: u32 = 1;
+/// Bump when the file layout changes and add a step to `migrate`.
+/// 2: `query.rowLimit` replaced by `query.pageSize` / `maxRowsHeld` / `maxResultMb`.
+pub const SETTINGS_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -36,11 +39,88 @@ impl Default for Settings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Appearance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct GeneralSettings {
     pub theme: Theme,
+    /// Base UI font size in px.
+    pub ui_font_size: u32,
+    pub density: Density,
+    /// How NULL shows in result grids.
+    pub null_display: String,
+    pub boolean_display: BooleanDisplay,
+    pub timestamp_display: TimestampDisplay,
+    /// Thousands separators in numeric cells.
+    pub number_grouping: bool,
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            theme: Theme::System,
+            ui_font_size: 14,
+            density: Density::Comfortable,
+            null_display: "NULL".into(),
+            boolean_display: BooleanDisplay::Text,
+            timestamp_display: TimestampDisplay::Iso,
+            number_grouping: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum Density {
+    Compact,
+    #[default]
+    Comfortable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum BooleanDisplay {
+    /// true / false
+    #[default]
+    Text,
+    /// t / f, like psql
+    Short,
+    /// ✓ / ✗
+    Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum TimestampDisplay {
+    /// As the server sends it.
+    #[default]
+    Iso,
+    /// timestamptz converted to the computer's time zone.
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum KeywordCase {
+    #[default]
+    Upper,
+    Lower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionMode {
+    /// Every statement commits on its own (unless the script says BEGIN).
+    #[default]
+    Auto,
+    /// A run starts a transaction when none is open; Commit / Rollback end it.
+    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -61,6 +141,13 @@ pub struct EditorSettings {
     pub font_size: u32,
     pub tab_size: u32,
     pub word_wrap: bool,
+    /// Case of keywords inserted by autocomplete.
+    pub keyword_case: KeywordCase,
+    pub line_numbers: bool,
+    pub autocomplete: bool,
+    /// Syntax checking while typing.
+    pub lint: bool,
+    pub highlight_active_line: bool,
 }
 
 impl Default for EditorSettings {
@@ -70,6 +157,11 @@ impl Default for EditorSettings {
             font_size: 14,
             tab_size: 2,
             word_wrap: false,
+            keyword_case: KeywordCase::Upper,
+            line_numbers: true,
+            autocomplete: true,
+            lint: true,
+            highlight_active_line: true,
         }
     }
 }
@@ -78,17 +170,27 @@ impl Default for EditorSettings {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(default, rename_all = "camelCase")]
 pub struct QuerySettings {
-    pub row_limit: u32,
+    /// Rows the grid fetches from the backend at a time.
+    pub page_size: u32,
+    /// Rows of one result held in memory; reading stops there. 0 = no limit.
+    pub max_rows_held: u32,
+    /// Estimated size of one result held in memory, in MB; reading stops there.
+    pub max_result_mb: u32,
     pub query_timeout_secs: u32, // 0 = no timeout
+    /// Ask before DROP, TRUNCATE, and DELETE / UPDATE without WHERE.
     pub confirm_destructive: bool,
+    pub transaction_mode: TransactionMode,
 }
 
 impl Default for QuerySettings {
     fn default() -> Self {
         Self {
-            row_limit: 1000,
+            page_size: 1000,
+            max_rows_held: 500_000,
+            max_result_mb: 512,
             query_timeout_secs: 0,
             confirm_destructive: true,
+            transaction_mode: TransactionMode::Auto,
         }
     }
 }
@@ -102,6 +204,13 @@ pub struct ConnectionSettings {
     /// How many recently used connections to health-check when the app
     /// opens. 0 = off.
     pub check_on_startup: u32,
+    /// SSL mode of new connections.
+    pub default_ssl_mode: SslMode,
+    pub ssh_host_key_policy: HostKeyPolicy,
+    /// "Save password" starts checked in the connection form.
+    pub save_passwords_by_default: bool,
+    /// LISTEN notifications kept per session before the oldest are dropped.
+    pub notification_buffer: u32,
 }
 
 impl Default for ConnectionSettings {
@@ -110,6 +219,10 @@ impl Default for ConnectionSettings {
             connect_timeout_secs: 10,
             keepalive_secs: 60,
             check_on_startup: 10,
+            default_ssl_mode: SslMode::Prefer,
+            ssh_host_key_policy: HostKeyPolicy::Ask,
+            save_passwords_by_default: true,
+            notification_buffer: 1000,
         }
     }
 }
@@ -117,8 +230,20 @@ impl Default for ConnectionSettings {
 impl Settings {
     pub fn validate(&self) -> ConfigResult<()> {
         fn check(ok: bool, msg: &str) -> ConfigResult<()> {
-            if ok { Ok(()) } else { Err(ConfigError::Invalid(msg.into())) }
+            if ok {
+                Ok(())
+            } else {
+                Err(ConfigError::Invalid(msg.into()))
+            }
         }
+        check(
+            (10..=24).contains(&self.general.ui_font_size),
+            "general.uiFontSize must be between 10 and 24",
+        )?;
+        check(
+            self.general.null_display.chars().count() <= 16,
+            "general.nullDisplay must be at most 16 characters",
+        )?;
         check(
             (6..=72).contains(&self.editor.font_size),
             "editor.fontSize must be between 6 and 72",
@@ -131,14 +256,33 @@ impl Settings {
             !self.editor.font_family.trim().is_empty(),
             "editor.fontFamily must not be empty",
         )?;
-        check(self.query.row_limit >= 1, "query.rowLimit must be at least 1")?;
+        check(
+            (50..=10_000).contains(&self.query.page_size),
+            "query.pageSize must be between 50 and 10000",
+        )?;
+        check(
+            (16..=16_384).contains(&self.query.max_result_mb),
+            "query.maxResultMb must be between 16 and 16384",
+        )?;
+        check(
+            self.query.query_timeout_secs <= 86_400,
+            "query.queryTimeoutSecs must be at most 86400",
+        )?;
         check(
             (1..=600).contains(&self.connection.connect_timeout_secs),
             "connection.connectTimeoutSecs must be between 1 and 600",
         )?;
         check(
+            self.connection.keepalive_secs <= 3600,
+            "connection.keepaliveSecs must be at most 3600",
+        )?;
+        check(
             self.connection.check_on_startup <= 50,
             "connection.checkOnStartup must be between 0 and 50",
+        )?;
+        check(
+            (10..=100_000).contains(&self.connection.notification_buffer),
+            "connection.notificationBuffer must be between 10 and 100000",
         )?;
         Ok(())
     }
@@ -183,14 +327,19 @@ impl SettingsStore {
     }
 
     pub fn get(&self) -> Settings {
-        self.current.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.current
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Deep-merges `patch` into the current settings, validates, saves and
     /// returns the result. A `null` in the patch resets that field to its default.
     pub fn update(&self, patch: Value) -> ConfigResult<Settings> {
         if !patch.is_object() {
-            return Err(ConfigError::Invalid("settings patch must be an object".into()));
+            return Err(ConfigError::Invalid(
+                "settings patch must be an object".into(),
+            ));
         }
         let mut current = self.current.write().unwrap_or_else(|e| e.into_inner());
         let mut merged = serde_json::to_value(&*current)?;
@@ -213,10 +362,24 @@ impl SettingsStore {
 }
 
 fn parse(text: &str) -> ConfigResult<Settings> {
-    let settings: Settings = serde_json::from_str(text)?;
-    // TODO: migrate older `version`s here once SETTINGS_VERSION goes past 1
+    let mut value: Value = serde_json::from_str(text)?;
+    migrate(&mut value);
+    let mut settings: Settings = serde_json::from_value(value)?;
+    settings.version = SETTINGS_VERSION;
     settings.validate()?;
     Ok(settings)
+}
+
+/// Brings an older file's JSON up to `SETTINGS_VERSION`, one step at a time.
+fn migrate(value: &mut Value) {
+    let version = value.get("version").and_then(Value::as_u64).unwrap_or(1);
+    if version < 2 {
+        // rowLimit (rows sent to the grid, default 1000) has no equivalent:
+        // the grid now pages through results held in the backend.
+        if let Some(query) = value.get_mut("query").and_then(Value::as_object_mut) {
+            query.remove("rowLimit");
+        }
+    }
 }
 
 fn merge(target: &mut Value, patch: Value) {
@@ -282,7 +445,11 @@ mod tests {
     fn older_file_without_check_on_startup_loads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        fs::write(&path, r#"{ "version": 1, "connection": { "connectTimeoutSecs": 5 } }"#).unwrap();
+        fs::write(
+            &path,
+            r#"{ "version": 1, "connection": { "connectTimeoutSecs": 5 } }"#,
+        )
+        .unwrap();
         let s = store(&dir).get();
         assert_eq!(s.connection.connect_timeout_secs, 5);
         assert_eq!(s.connection.check_on_startup, 10);
@@ -305,12 +472,32 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let saved = store(&dir)
-            .update(json!({ "general": { "theme": "dark" }, "query": { "rowLimit": 50 } }))
+            .update(json!({ "general": { "theme": "dark" }, "query": { "pageSize": 500 } }))
             .unwrap();
         let reloaded = store(&dir).get();
         assert_eq!(saved, reloaded);
         assert_eq!(reloaded.general.theme, Theme::Dark);
-        assert_eq!(reloaded.query.row_limit, 50);
+        assert_eq!(reloaded.query.page_size, 500);
+    }
+
+    #[test]
+    fn version_1_file_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(
+            &path,
+            r#"{ "version": 1, "general": { "theme": "dark" }, "query": { "rowLimit": 0, "queryTimeoutSecs": 30 } }"#,
+        )
+        .unwrap();
+        let s = store(&dir).get();
+        assert_eq!(s.version, SETTINGS_VERSION);
+        assert_eq!(s.general.theme, Theme::Dark);
+        assert_eq!(s.query.query_timeout_secs, 30);
+        assert_eq!(
+            s.query.max_rows_held,
+            QuerySettings::default().max_rows_held
+        );
+        assert!(path.exists(), "a valid old file must not be moved to .bak");
     }
 
     #[test]
@@ -332,9 +519,13 @@ mod tests {
     fn invalid_patch_is_rejected_and_not_saved() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(&dir);
-        let err = s.update(json!({ "editor": { "fontSize": 1000 } })).unwrap_err();
+        let err = s
+            .update(json!({ "editor": { "fontSize": 1000 } }))
+            .unwrap_err();
         assert!(matches!(err, ConfigError::Invalid(_)));
-        let err = s.update(json!({ "editor": { "fontSize": "big" } })).unwrap_err();
+        let err = s
+            .update(json!({ "editor": { "fontSize": "big" } }))
+            .unwrap_err();
         assert!(matches!(err, ConfigError::Json(_)));
         assert_eq!(s.get(), Settings::default());
         assert!(!s.path().exists());
@@ -344,7 +535,11 @@ mod tests {
     fn unknown_fields_are_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        fs::write(&path, r#"{ "version": 1, "bogus": 1, "editor": { "tabSize": 4 } }"#).unwrap();
+        fs::write(
+            &path,
+            r#"{ "version": 1, "bogus": 1, "editor": { "tabSize": 4 } }"#,
+        )
+        .unwrap();
         let s = store(&dir);
         assert_eq!(s.get().editor.tab_size, 4);
         s.update(json!({})).unwrap();
@@ -380,7 +575,8 @@ mod tests {
     fn reset_restores_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(&dir);
-        s.update(json!({ "general": { "theme": "light" } })).unwrap();
+        s.update(json!({ "general": { "theme": "light" } }))
+            .unwrap();
         assert_eq!(s.reset().unwrap(), Settings::default());
         assert_eq!(store(&dir).get(), Settings::default());
     }

@@ -1,8 +1,9 @@
 [package]
 name = "swiftql"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+version = "1.0.0"
+description = "SwiftQL, a desktop SQL client"
+authors = ["Subhranil Maity"]
+license = "MIT"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -23,9 +24,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-driver-core = { version = "0.1.0", path = "../crates/driver-core", features = ["specta"] }
-driver-postgres = { version = "0.1.0", path = "../crates/driver-postgres" }
-config-store = { version = "0.1.0", path = "../crates/config-store", features = ["specta"] }
+driver-core = { version = "1.0.0", path = "../crates/driver-core", features = ["specta"] }
+driver-postgres = { version = "1.0.0", path = "../crates/driver-postgres" }
+config-store = { version = "1.0.0", path = "../crates/config-store", features = ["specta"] }
+ssh-tunnel = { version = "1.0.0", path = "../crates/ssh-tunnel" }
 tokio = { version = "1.54.1", features = ["full"] }
 sqlparser = "0.63.0"
 tracing = "0.1.44"

@@ -8,7 +8,12 @@ use driver_core::{
     driver::Driver,
 };
 
-use crate::{capabilities, config, connection::PgConnection, tls};
+use crate::{
+    capabilities, config,
+    connection::PgConnection,
+    tls,
+    tunnel::{self, Route},
+};
 
 const IMAGE_BYTES: &[u8] = include_bytes!("../../../assets/postgresql.svg");
 
@@ -40,13 +45,14 @@ impl Driver for PgDriver {
         &[
             AuthKind::Password,
             AuthKind::PasswordPrompt,
-            // AuthKind::PgPass,
-            // AuthKind::ClientCert, // Not needed for now
+            AuthKind::PgPass,
+            AuthKind::ClientCert,
         ]
     }
 
     fn extra_options(&self) -> Vec<FieldSpec> {
-        // todo!("application_name, search_path, connect_timeout, ...")
+        // Connect timeout and keepalive come from the app settings; no
+        // per-connection extras yet.
         vec![]
     }
 
@@ -63,7 +69,18 @@ impl Driver for PgDriver {
 
     async fn connect(&self, config: &ConnectConfig) -> DbResult<Box<dyn Connection>> {
         let pg_config = config::to_pg_config(config)?;
-        let tls = tls::make_tls(&config.tls)?;
-        Ok(Box::new(PgConnection::open(&pg_config, tls).await?))
+        let tls = tls::make_tls(&config.tls, &config.auth)?;
+        let route = match &config.tunnel {
+            None => Route::Direct,
+            Some(t) => {
+                let (host, port) = config::first_host(&pg_config);
+                Route::Tunnel {
+                    tunnel: tunnel::open(t, config).await?,
+                    host,
+                    port,
+                }
+            }
+        };
+        Ok(Box::new(PgConnection::open(&pg_config, tls, route).await?))
     }
 }

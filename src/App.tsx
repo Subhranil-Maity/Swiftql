@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
+import { ConfirmRunDialog } from "@/features/console/components/confirm-run-dialog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ConnectionPage } from "@/pages/connection-page";
 import { SettingsPage } from "@/pages/settings-page";
@@ -34,6 +35,21 @@ function useStartup() {
   }, [connectionsLoaded, settingsLoaded, checkRecent]);
 }
 
+/** Ctrl+, (Cmd+, on macOS) opens Settings from anywhere. */
+function useSettingsShortcut() {
+  const go = useNavigationStore((s) => s.go);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "," && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        go({ page: "settings" });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [go]);
+}
+
 function Page() {
   const view = useNavigationStore((s) => s.view);
   switch (view.page) {
@@ -54,10 +70,12 @@ function App() {
   // Settings opens over the workspace too; its Back returns there.
   const showSettings = useNavigationStore((s) => s.view.page === "settings");
   useStartup();
+  useSettingsShortcut();
 
   return (
     <TooltipProvider>
       {session && !showSettings ? <WorkspacePage session={session} /> : <Page />}
+      <ConfirmRunDialog />
       <Toaster position="bottom-right" />
     </TooltipProvider>
   );

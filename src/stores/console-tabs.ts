@@ -7,6 +7,7 @@ import {
   emptyTabSet,
   parseTabSet,
 } from "@/features/console/model/tab";
+import { createDebouncedSave } from "@/lib/debounced-save";
 import { api } from "@/lib/ipc";
 import { errorMessage } from "@/lib/ipc-error";
 
@@ -14,7 +15,6 @@ import { errorMessage } from "@/lib/ipc-error";
 const storageKey = (connectionId: string) => `console.tabs.${connectionId}`;
 
 const SAVE_DELAY_MS = 500;
-const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
 
 interface ConsoleTabsState {
   byConnection: Record<string, ConsoleTabSet>;
@@ -41,22 +41,11 @@ export const useConsoleTabsStore = create<ConsoleTabsState>()((set, get) => {
     scheduleSave(connectionId);
   };
 
-  const scheduleSave = (connectionId: string) => {
-    clearTimeout(pendingSaves.get(connectionId));
-    pendingSaves.set(
-      connectionId,
-      setTimeout(() => {
-        pendingSaves.delete(connectionId);
-        const tabs = get().byConnection[connectionId];
-        if (!tabs) return;
-        // TODO: surface save failures in the UI instead of only logging them
-        api.setAppState(storageKey(connectionId), tabs).catch((error: unknown) => {
-          console.warn(`saving console tabs for ${connectionId} failed:`, errorMessage(error));
-        });
-      }, SAVE_DELAY_MS),
-    );
-    // TODO: flush pending saves when the window closes; the last ~500ms of typing is lost on quit
-  };
+  // Failures show a toast with Retry; pending saves are flushed when the window closes.
+  const { schedule: scheduleSave } = createDebouncedSave("console tabs", SAVE_DELAY_MS, (connectionId) => {
+    const tabs = get().byConnection[connectionId];
+    return tabs ? api.setAppState(storageKey(connectionId), tabs) : null;
+  });
 
   return {
     byConnection: {},

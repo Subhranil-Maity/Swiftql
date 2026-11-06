@@ -1,8 +1,8 @@
-// Saving an export to a file the user picks: the native "Save as" dialog,
-// then the backend writes the bytes.
-import { api, showSaveDialog } from "@/lib/ipc";
+// Saving an export to a file the user picks. The backend opens the native
+// "Save as" dialog and writes the bytes, so the webview never picks a path.
+import { saveExport, type SaveFilter } from "@/lib/ipc";
 
-export type SaveFilter = { name: string; extensions: string[] };
+export type { SaveFilter };
 
 /**
  * Asks where to save, then writes `contents` there. Resolves with the path,
@@ -13,11 +13,8 @@ export async function saveFile(
   contents: string | Uint8Array,
   filters: SaveFilter[],
 ): Promise<string | null> {
-  const path = await showSaveDialog({ defaultPath: defaultName, filters });
-  if (!path) return null;
   const bytes = typeof contents === "string" ? new TextEncoder().encode(contents) : contents;
-  await api.writeExportFile(path, Array.from(bytes));
-  return path;
+  return saveExport(defaultName, bytes, filters);
 }
 
 /** The bytes behind a `data:` URL, e.g. from html-to-image. */

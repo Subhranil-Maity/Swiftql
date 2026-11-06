@@ -12,8 +12,10 @@ import type { ColumnMeta } from "@/lib/ipc";
 /** Above the grid: row count and sort on the left; columns, copy and export on the right. */
 export function ResultToolbar({
   rowCount,
+  loading,
   columns,
   sort,
+  sorting,
   onClearSort,
   hidden,
   onToggleColumn,
@@ -23,8 +25,12 @@ export function ResultToolbar({
   onExport,
 }: {
   rowCount: number;
+  /** Rows are still read; the count grows. */
+  loading: boolean;
   columns: ColumnMeta[];
   sort: SortState;
+  /** The backend is sorting. */
+  sorting: boolean;
   onClearSort: () => void;
   hidden: ReadonlySet<number>;
   onToggleColumn: (column: number) => void;
@@ -36,7 +42,10 @@ export function ResultToolbar({
   const sortedBy = sort ? columns[sort.column]?.name : undefined;
   return (
     <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs">
-      <span className="px-1 text-muted-foreground tabular-nums">{plural(rowCount, "row")}</span>
+      <span className="px-1 text-muted-foreground tabular-nums">{plural(rowCount, "row")}
+        {loading && "…"}
+      </span>
+      {sorting && <span className="text-muted-foreground">· sorting…</span>}
       {sort && sortedBy && (
         <span className="flex items-center text-muted-foreground">
           · sorted by <span className="ml-1 font-medium text-foreground">{sortedBy}</span>

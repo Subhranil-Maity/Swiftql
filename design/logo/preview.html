@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>SwiftQL logo prototypes</title>
+<style>
+body{margin:0;font:14px system-ui,sans-serif;background:#f4f4f5;color:#18181b}
+h1{font-size:18px;margin:24px 32px 4px} p{margin:0 32px 16px;color:#52525b}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;padding:0 32px 32px}
+.card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:20px}
+.card h2{font-size:15px;margin:0 0 4px}.card p{margin:0 0 14px;padding:0}
+.row{display:flex;align-items:flex-end;gap:18px}
+.dark{background:#0a0a0a;border-radius:8px;padding:12px;display:flex;gap:14px;align-items:flex-end}
+.light{background:#fafafa;border:1px solid #e4e4e7;border-radius:8px;padding:12px;display:flex;gap:14px;align-items:flex-end}
+</style></head><body>
+<h1>SwiftQL logo prototypes</h1><p>Each one at 128, 48, 24 and 16 px, on dark and light backgrounds.</p>
+<div class="grid" id="g"></div>
+<script>
+const items=[["i-navy-round.svg","I · Navy","White italic SQL with three blue speed dashes of different lengths."],
+["j-navy-square.svg","J · Navy, even dashes","The same with three equal dashes and square ends."],
+["k-light.svg","K · Light","Navy letters and blue dashes on white."],
+["l-blue.svg","L · Blue","White letters and light-blue dashes on bright blue."]];
+const sizes=[128,48,24,16];
+document.getElementById("g").innerHTML=items.map(([f,t,d])=>`<div class="card"><h2>${t}</h2><p>${d}</p><div class="row"><div class="dark">${sizes.map(s=>`<img src="${f}" width="${s}" height="${s}">`).join("")}</div><div class="light">${sizes.map(s=>`<img src="${f}" width="${s}" height="${s}">`).join("")}</div></div></div>`).join("");
+</script></body></html>

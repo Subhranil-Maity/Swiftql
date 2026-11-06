@@ -10,15 +10,14 @@ import {
   splitStatementsSync,
 } from "@/features/console/lib/sql-statements";
 import { codePointToOffset } from "@/features/console/lib/text-offsets";
+import { destructiveStatements } from "@/features/console/lib/destructive";
+import { confirmRun } from "@/features/console/stores/confirm-run";
 import { api, Channel, type DbError, IpcError, type RunEvent } from "@/lib/ipc";
 import { useQueryRunsStore } from "@/stores/query-runs";
 import { useSchemaCatalogStore } from "@/stores/schema-catalog";
 import { useSchemaModelStore } from "@/stores/schema-model";
 import { useSessionsStore } from "@/stores/sessions";
-
-/** Rows fetched per result; the rest is cancelled on the server. */
-// TODO: make this a setting, and let the grid load more on demand
-export const ROW_LIMIT = 1000;
+import { useSettingsStore } from "@/stores/settings";
 
 /** How long to wait for channel events that trail the command's reply. */
 const TRAILING_EVENTS_MS = 2000;
@@ -101,6 +100,11 @@ export async function run(tabId: string, sessionId: string, driverId: string, ki
 
   const list = kind === "script" ? await scriptPieces(view, driverId) : await statementPieces(view, driverId);
   if (list.length === 0 || useQueryRunsStore.getState().runningTab[sessionId]) return;
+  if (useSettingsStore.getState().settings?.query.confirmDestructive ?? true) {
+    const risky = destructiveStatements(list.map((p) => p.sql));
+    if (risky.length > 0 && !(await confirmRun(risky))) return;
+    if (useQueryRunsStore.getState().runningTab[sessionId]) return;
+  }
   store.begin(tabId, sessionId, kind, list);
 
   // statementFinished / statementFailed events seen, to know when the stream is complete.
@@ -124,8 +128,7 @@ export async function run(tabId: string, sessionId: string, driverId: string, ki
     const summary = await api.runStatements(
       sessionId,
       list.map((p) => p.sql),
-      ROW_LIMIT,
-      channel as unknown as Parameters<typeof api.runStatements>[3],
+      channel as unknown as Parameters<typeof api.runStatements>[2],
     );
     // The reply can overtake the channel's last messages.
     const expected = summary.executed + (summary.failedAt != null ? 1 : 0);

@@ -1,62 +1,103 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, path::PathBuf, time::Duration};
 
 use driver_core::{
-    connect::{Auth, ConnectConfig, Secret, SslMode, Target, TlsConfig},
+    connect::{Auth, ConnectConfig, Secret, SslMode, Target, Timeouts, TlsConfig},
     dbresults::DbResult,
     error::{DbError, ErrorKind},
 };
-use tokio_postgres::config::SslMode as PgSslMode;
+use tokio_postgres::config::{Host, SslMode as PgSslMode, TargetSessionAttrs};
+
+use crate::pgpass;
 
 const DEFAULT_PORT: u16 = 5432;
-// TODO: use Settings.connection.connect_timeout_secs (config-store), passed down once Tauri connect commands exist
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const APPLICATION_NAME: &str = "Swiftql";
+/// When the app passes no `Timeouts::connect_secs`.
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const APPLICATION_NAME: &str = "SwiftQL";
 
-/// postgres://user:pass@host:port/db?sslmode=... → ConnectConfig
+/// postgres://user:pass@host:port/db?sslmode=... → ConnectConfig.
+///
+/// One host gives `Target::Host`; several (`h1,h2:5433`) give `Target::Url`
+/// with the password left out, so it isn't stored in the URL.
 pub fn parse_url(url: &str) -> DbResult<ConnectConfig> {
     let parsed = ParsedUrl::parse(url)?;
 
     let user = parsed
         .user
+        .clone()
         .ok_or_else(|| invalid_url("URL has no user name"))?;
-    let auth = match parsed.password {
-        Some(password) => Auth::Password {
+    let auth = match (&parsed.ssl_cert, &parsed.ssl_key, &parsed.password) {
+        (Some(cert), Some(key), _) => Auth::ClientCert {
             user,
-            password: Secret::new(password),
+            cert: cert.clone(),
+            key: key.clone(),
         },
-        None => Auth::PasswordPrompt { user },
+        (_, _, Some(password)) => Auth::Password {
+            user,
+            password: Secret::new(password.clone()),
+        },
+        _ => Auth::PasswordPrompt { user },
+    };
+
+    let target = match parsed.hosts.as_slice() {
+        [(host, port)] => Target::Host {
+            host: host.clone(),
+            port: *port,
+            database: parsed.database.clone(),
+        },
+        _ => Target::Url {
+            url: without_password(url),
+        },
     };
 
     Ok(ConnectConfig {
-        target: Target::Host {
-            host: parsed.host,
-            port: parsed.port,
-            database: parsed.database,
-        },
+        target,
         auth,
         tls: TlsConfig {
             mode: parsed.ssl_mode.unwrap_or_default(),
-            ca_cert: None,
+            ca_cert: parsed.ssl_root_cert.clone(),
         },
         tunnel: None,
         options: HashMap::new(),
+        timeouts: Timeouts::default(),
+        host_keys: None,
     })
 }
 
-/// ConnectConfig → tokio_postgres::Config (target, auth, options).
+/// The URL with its password removed: "postgres://a:pw@h/db" → "postgres://a@h/db".
+fn without_password(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    match authority.rsplit_once('@') {
+        Some((userinfo, hosts)) => {
+            let user = userinfo.split_once(':').map_or(userinfo, |(u, _)| u);
+            format!("{scheme}://{user}@{hosts}{tail}")
+        }
+        None => url.to_owned(),
+    }
+}
+
+/// ConnectConfig → tokio_postgres::Config (target, auth, timeouts).
 /// Unsupported target/auth → ErrorKind::Unsupported.
 pub fn to_pg_config(config: &ConnectConfig) -> DbResult<tokio_postgres::Config> {
     let mut pg = tokio_postgres::Config::new();
 
     match &config.target {
-        // The URL only provides host/port/db; credentials come from config.auth
-        // and TLS from config.tls.
+        // The URL provides hosts, database and session attributes; credentials
+        // come from config.auth and TLS from config.tls.
         Target::Url { url } => {
             let parsed = ParsedUrl::parse(url)?;
-            pg.host(&parsed.host);
-            pg.port(parsed.port.unwrap_or(DEFAULT_PORT));
+            for (host, port) in &parsed.hosts {
+                pg.host(host);
+                pg.port(port.unwrap_or(DEFAULT_PORT));
+            }
             if let Some(db) = &parsed.database {
                 pg.dbname(db);
+            }
+            if let Some(attrs) = parsed.target_session_attrs {
+                pg.target_session_attrs(attrs);
             }
         }
         Target::Host {
@@ -102,18 +143,38 @@ pub fn to_pg_config(config: &ConnectConfig) -> DbResult<tokio_postgres::Config> 
             ));
         }
         Auth::ClientCert { user, .. } => {
-            pg.user(user); // TODO: cert/key must be loaded into the TLS connector
+            pg.user(user); // the certificate goes into the TLS connector (tls.rs)
+        }
+        Auth::PgPass { user } => {
+            pg.user(user);
+            let (host, port) = first_host(&pg);
+            let lookup = pgpass::Lookup {
+                host: &host,
+                port,
+                database: pg.get_dbname().unwrap_or(user),
+                user,
+            };
+            match pgpass::find(&lookup) {
+                Some(password) => {
+                    pg.password(password);
+                }
+                None => {
+                    let file = pgpass::file_path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "the password file".into());
+                    return Err(DbError::new(
+                        ErrorKind::Auth,
+                        format!("No password for {user}@{host}:{port} in PGPASSWORD or {file}"),
+                    ));
+                }
+            }
         }
         Auth::None => {
             return Err(unsupported("PostgreSQL always needs a user name"));
         }
-        Auth::PgPass { .. } => {
-            return Err(unsupported(
-                "TODO: ~/.pgpass / PGPASSWORD not supported yet",
-            ));
-        }
         Auth::Token { .. } => {
-            return Err(unsupported("TODO: token authentication not supported yet"));
+            // TODO: cloud IAM tokens (AWS RDS, Azure AD) need provider SDKs.
+            return Err(unsupported("token authentication is not supported yet"));
         }
     }
 
@@ -124,11 +185,28 @@ pub fn to_pg_config(config: &ConnectConfig) -> DbResult<tokio_postgres::Config> 
         SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => PgSslMode::Require,
     });
 
-    pg.connect_timeout(CONNECT_TIMEOUT); // TODO: from global app config (see CONNECT_TIMEOUT)
+    let connect_timeout = config
+        .timeouts
+        .connect_secs
+        .filter(|&s| s > 0)
+        .map_or(DEFAULT_CONNECT_TIMEOUT, |s| {
+            Duration::from_secs(u64::from(s))
+        });
+    pg.connect_timeout(connect_timeout);
+    if let Some(secs) = config.timeouts.keepalive_secs.filter(|&s| s > 0) {
+        pg.keepalives(true);
+        pg.keepalives_idle(Duration::from_secs(u64::from(secs)));
+    } else {
+        pg.keepalives(false);
+    }
     pg.application_name(APPLICATION_NAME); // shown in pg_stat_activity
 
-    if config.tunnel.is_some() {
-        return Err(unsupported("TODO: SSH tunnels not supported yet"));
+    if config.tunnel.is_some()
+        && (pg.get_hosts().len() != 1 || !matches!(pg.get_hosts()[0], Host::Tcp(_)))
+    {
+        return Err(unsupported(
+            "an SSH tunnel needs exactly one host name (no sockets or host lists)",
+        ));
     }
 
     // No driver options are supported yet.
@@ -139,16 +217,31 @@ pub fn to_pg_config(config: &ConnectConfig) -> DbResult<tokio_postgres::Config> 
     Ok(pg)
 }
 
+/// The first TCP host and its port, e.g. for pgpass and SSH tunnels;
+/// "localhost" for a socket, as libpq uses for pgpass.
+pub fn first_host(pg: &tokio_postgres::Config) -> (String, u16) {
+    let host = match pg.get_hosts().first() {
+        Some(Host::Tcp(h)) => h.clone(),
+        _ => "localhost".into(),
+    };
+    let port = pg.get_ports().first().copied().unwrap_or(DEFAULT_PORT);
+    (host, port)
+}
+
 // ---------- URL parsing ----------
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
 struct ParsedUrl {
     user: Option<String>,
     password: Option<String>,
-    host: String,
-    port: Option<u16>,
+    /// One or more `host[:port]`.
+    hosts: Vec<(String, Option<u16>)>,
     database: Option<String>,
     ssl_mode: Option<SslMode>,
+    ssl_root_cert: Option<PathBuf>,
+    ssl_cert: Option<PathBuf>,
+    ssl_key: Option<PathBuf>,
+    target_session_attrs: Option<TargetSessionAttrs>,
 }
 
 impl ParsedUrl {
@@ -167,7 +260,7 @@ impl ParsedUrl {
             None => (rest, ""),
         };
         // rsplit: the password may contain an unescaped '@'
-        let (userinfo, hostport) = match authority.rsplit_once('@') {
+        let (userinfo, hostports) = match authority.rsplit_once('@') {
             Some((userinfo, hostport)) => (Some(userinfo), hostport),
             None => (None, authority),
         };
@@ -185,17 +278,13 @@ impl ParsedUrl {
             parsed.password = password.map(decode).transpose()?;
         }
 
-        if hostport.contains(',') {
-            return Err(unsupported(
-                "TODO: URLs with several hosts are not supported yet",
-            ));
+        for hostport in hostports.split(',') {
+            let (host, port) = split_host_port(hostport)?;
+            if host.is_empty() {
+                return Err(invalid_url("URL has no host"));
+            }
+            parsed.hosts.push((decode(host)?, port));
         }
-        let (host, port) = split_host_port(hostport)?;
-        if host.is_empty() {
-            return Err(invalid_url("URL has no host"));
-        }
-        parsed.host = decode(host)?;
-        parsed.port = port;
 
         if !path.is_empty() {
             parsed.database = Some(decode(path)?);
@@ -207,8 +296,24 @@ impl ParsedUrl {
             .filter(|p| !p.is_empty())
         {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            let value = decode(value)?;
             match decode(key)?.as_str() {
-                "sslmode" => parsed.ssl_mode = Some(parse_ssl_mode(&decode(value)?)?),
+                "sslmode" => parsed.ssl_mode = Some(parse_ssl_mode(&value)?),
+                "sslrootcert" => parsed.ssl_root_cert = Some(PathBuf::from(value)),
+                "sslcert" => parsed.ssl_cert = Some(PathBuf::from(value)),
+                "sslkey" => parsed.ssl_key = Some(PathBuf::from(value)),
+                "target_session_attrs" => {
+                    parsed.target_session_attrs = Some(match value.as_str() {
+                        "any" => TargetSessionAttrs::Any,
+                        "read-write" => TargetSessionAttrs::ReadWrite,
+                        "read-only" => TargetSessionAttrs::ReadOnly,
+                        other => {
+                            return Err(unsupported(format!(
+                                "unsupported target_session_attrs `{other}`"
+                            )));
+                        }
+                    })
+                }
                 other => return Err(unsupported(format!("unknown URL parameter `{other}`"))),
             }
         }
@@ -298,8 +403,7 @@ mod tests {
             .unwrap();
         assert_eq!(p.user.as_deref(), Some("alice"));
         assert_eq!(p.password.as_deref(), Some("p@ss"));
-        assert_eq!(p.host, "db.example.com");
-        assert_eq!(p.port, Some(6543));
+        assert_eq!(p.hosts, [("db.example.com".to_owned(), Some(6543))]);
         assert_eq!(p.database.as_deref(), Some("app"));
         assert_eq!(p.ssl_mode, Some(SslMode::Require));
     }
@@ -307,8 +411,7 @@ mod tests {
     #[test]
     fn ipv6_host() {
         let p = ParsedUrl::parse("postgresql://bob@[::1]:5432").unwrap();
-        assert_eq!(p.host, "::1");
-        assert_eq!(p.port, Some(5432));
+        assert_eq!(p.hosts, [("::1".to_owned(), Some(5432))]);
         assert_eq!(p.database, None);
     }
 
@@ -322,9 +425,36 @@ mod tests {
     fn rejects_bad_urls() {
         assert!(parse_url("mysql://a@h/db").is_err());
         assert!(parse_url("postgres://localhost/db").is_err()); // no user
-        assert!(parse_url("postgres://a@h1,h2/db").is_err());
         assert!(parse_url("postgres://a@h/db?application_name=x").is_err());
         assert!(parse_url("postgres://a@h:notaport/db").is_err());
+    }
+
+    #[test]
+    fn several_hosts_keep_no_password() {
+        let config =
+            parse_url("postgres://a:secret@h1,h2:5433/db?target_session_attrs=read-write").unwrap();
+        let Target::Url { url } = &config.target else {
+            panic!("{:?}", config.target)
+        };
+        assert_eq!(
+            url,
+            "postgres://a@h1,h2:5433/db?target_session_attrs=read-write"
+        );
+        assert!(matches!(config.auth, Auth::Password { .. }));
+        let pg = to_pg_config(&config).unwrap();
+        assert_eq!(pg.get_hosts().len(), 2);
+        assert_eq!(pg.get_ports(), [5432, 5433]);
+    }
+
+    #[test]
+    fn ssl_parameters() {
+        let config = parse_url(
+            "postgres://a@h/db?sslmode=verify-full&sslrootcert=ca.pem&sslcert=c.pem&sslkey=k.pem",
+        )
+        .unwrap();
+        assert_eq!(config.tls.mode, SslMode::VerifyFull);
+        assert_eq!(config.tls.ca_cert, Some(PathBuf::from("ca.pem")));
+        assert!(matches!(config.auth, Auth::ClientCert { .. }));
     }
 
     #[test]

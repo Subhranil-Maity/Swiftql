@@ -1,4 +1,5 @@
 import {
+  BellIcon,
   type LucideIcon,
   NetworkIcon,
   SettingsIcon,
@@ -17,6 +18,7 @@ import {
   SidebarMenuItem,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { useNotificationsStore } from "@/features/notifications/stores/notifications";
 import { SidebarNavItem } from "@/features/workspace/components/sidebar-nav-item";
 import { useWorkspace } from "@/features/workspace/model/workspace-context";
 import { useNavigationStore } from "@/stores/navigation";
@@ -26,12 +28,14 @@ const VIEWS: { view: WorkspaceView; label: string; icon: LucideIcon }[] = [
   { view: "console", label: "Console", icon: SquareTerminalIcon },
   { view: "tables", label: "Tables", icon: TableIcon },
   { view: "graph", label: "Graph", icon: NetworkIcon },
+  { view: "notifications", label: "Notifications", icon: BellIcon },
 ];
 
 /** Workspace navigation. Collapses to an icon rail (the header toggle or Ctrl+B). */
 export function AppSidebar() {
   const go = useNavigationStore((s) => s.go);
-  const { connectionId } = useWorkspace();
+  const { connectionId, sessionId } = useWorkspace();
+  const unread = useNotificationsStore((s) => s.bySession[sessionId]?.unread ?? 0);
   const current = useWorkspaceView(connectionId);
   const setView = useWorkspaceViewStore((s) => s.setView);
 
@@ -55,6 +59,7 @@ export function AppSidebar() {
                 label={label}
                 active={current === view}
                 onSelect={() => setView(connectionId, view)}
+                badge={view === "notifications" ? unread : undefined}
               />
             ))}
           </SidebarMenu>

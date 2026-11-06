@@ -84,7 +84,8 @@ function Entry({ entry, onJump }: { entry: MessageEntry; onJump: (offset: number
       return (
         <p className="text-muted-foreground">
           <span className="text-foreground/80">{entry.tag}</span> · {formatDuration(entry.elapsedMs)}
-          {entry.truncated && " · stopped at the row limit"}
+          {entry.resultState === "truncated" && " · stopped at the memory limit (Settings → Query & results)"}
+          {entry.resultState === "cancelled" && " · stopped; rows read so far are kept"}
         </p>
       );
     case "notice": {

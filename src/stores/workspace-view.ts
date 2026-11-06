@@ -2,7 +2,7 @@
 // a reconnect starts in the console.
 import { create } from "zustand";
 
-export type WorkspaceView = "console" | "tables" | "graph";
+export type WorkspaceView = "console" | "tables" | "graph" | "notifications";
 
 /** A table the graph should pan to once it's showing. */
 export type GraphFocus = { key: string; nonce: number };

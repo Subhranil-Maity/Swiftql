@@ -12,9 +12,14 @@ use driver_core::{
     error::{DbError, ErrorKind},
     introspec::{IntrospectScope, SchemaSnapshot},
     notice::{Notice, NoticeSeverity},
+    notify::Notification,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::broadcast,
 };
 use tokio_postgres::{
-    AsyncMessage, Client, NoTls, Socket,
+    AsyncMessage, Client, NoTls,
     error::Severity,
     tls::{MakeTlsConnect, TlsConnect},
     types::ToSql,
@@ -28,6 +33,7 @@ use crate::{
     introspect, sql,
     stream::PgRowStream,
     tls::PgTls,
+    tunnel::{Route, ssh_error},
     tx::{self, TxCommand, TxState},
     types::column_meta,
 };
@@ -38,8 +44,18 @@ const MIN_VERSION_NUM: i32 = 100_000;
 /// Notices kept until someone reads them; older ones are dropped first.
 const MAX_NOTICES: usize = 1000;
 
+/// Notifications buffered per subscriber; a slower one misses the oldest.
+const NOTIFY_CAPACITY: usize = 4096;
+
 /// Filled by the connection task, drained by `take_notices`.
 pub(crate) type NoticeQueue = Arc<Mutex<VecDeque<Notice>>>;
+
+/// Where the connection task puts what the server sends unasked.
+#[derive(Clone)]
+struct Sinks {
+    notices: NoticeQueue,
+    notifications: broadcast::Sender<Notification>,
+}
 
 pub struct PgConnection {
     pub(crate) client: Client,
@@ -47,20 +63,42 @@ pub struct PgConnection {
     pub(crate) version: ServerVersion,
     pub(crate) capabilities: Capabilities, // version-dependent
     pub(crate) tls: PgTls,                 // reused for cancel requests
+    pub(crate) route: Route,               // so is the SSH tunnel, kept alive here
     /// Why the background connection task stopped, if it failed.
     pub(crate) closed: Arc<Mutex<Option<DbError>>>,
     pub(crate) notices: NoticeQueue,
+    notifications: broadcast::Sender<Notification>,
     pub(crate) tx: TxState,
 }
 
 impl PgConnection {
     /// Connect, start the background connection task and read the server version.
-    pub async fn open(config: &tokio_postgres::Config, tls: PgTls) -> DbResult<Self> {
+    /// Over `route`: directly, or through an SSH tunnel's channel.
+    pub async fn open(config: &tokio_postgres::Config, tls: PgTls, route: Route) -> DbResult<Self> {
         let notices: NoticeQueue = Arc::default();
-        let (client, closed) = match &tls {
-            PgTls::None => spawn_connection(config, NoTls, Arc::clone(&notices)).await?,
-            PgTls::Native(connector) => {
-                spawn_connection(config, connector.clone(), Arc::clone(&notices)).await?
+        let (notifications, _) = broadcast::channel(NOTIFY_CAPACITY);
+        let sinks = Sinks {
+            notices: Arc::clone(&notices),
+            notifications: notifications.clone(),
+        };
+        let (client, closed) = match (&route, &tls) {
+            (Route::Direct, PgTls::None) => connect_direct(config, NoTls, sinks).await?,
+            (Route::Direct, PgTls::Rustls(make)) => {
+                connect_direct(config, make.clone(), sinks).await?
+            }
+            (Route::Tunnel { tunnel, host, port }, tls) => {
+                let stream = tunnel.dial(host, *port).await.map_err(ssh_error)?;
+                match tls {
+                    PgTls::None => connect_raw(config, stream, NoTls, sinks).await?,
+                    PgTls::Rustls(make) => {
+                        let connect = MakeTlsConnect::<ssh_tunnel::TunnelStream>::make_tls_connect(
+                            &mut make.clone(),
+                            host,
+                        )
+                        .map_err(|err| DbError::new(ErrorKind::Network, err.to_string()))?;
+                        connect_raw(config, stream, connect, sinks).await?
+                    }
+                }
             }
         };
 
@@ -71,10 +109,20 @@ impl PgConnection {
             capabilities: capabilities::for_version(&version),
             version,
             tls,
+            route,
             closed,
             notices,
+            notifications,
             tx: Arc::new(Mutex::new(TxStatus::Idle)),
         })
+    }
+
+    fn cancel(&self) -> PgCancel {
+        PgCancel {
+            token: self.client.cancel_token(),
+            tls: self.tls.clone(),
+            route: self.route.clone(),
+        }
     }
 
     /// Fail fast if the connection already died, with the real cause.
@@ -101,20 +149,14 @@ impl PgConnection {
     }
 
     async fn run(&self, sql: &str) -> DbResult<ExecOutcome> {
-        let statement = self.client.prepare(sql).await.map_err(|err| {
-            let err = map_err(err);
-            if is_multi_statement(&err) {
-                DbError {
-                    kind: ErrorKind::Unsupported,
-                    message:
-                        "multiple statements are not supported yet; run one statement at a time"
-                            .into(),
-                    ..err
-                }
-            } else {
-                err
-            }
-        })?;
+        // Checked here rather than from the server's (localized) error message.
+        if sql::has_multiple_statements(sql) {
+            return Err(DbError::new(
+                ErrorKind::Unsupported,
+                "multiple statements are not supported yet; run one statement at a time",
+            ));
+        }
+        let statement = self.client.prepare(sql).await.map_err(map_err)?;
         if !statement.params().is_empty() {
             return Err(DbError::new(
                 ErrorKind::Unsupported,
@@ -141,15 +183,30 @@ impl PgConnection {
             .query_raw(&statement, no_params)
             .await
             .map_err(map_err)?;
-        let cancel = PgCancel {
-            token: self.client.cancel_token(),
-            tls: self.tls.clone(),
-        };
+        let cancel = self.cancel();
         Ok(ExecOutcome::Rows {
             columns,
             stream: Box::new(PgRowStream::new(rows, cancel, Arc::clone(&self.tx))),
             command: sql::command_tag(sql),
         })
+    }
+
+    /// Reads the real transaction status from the server. Inside a
+    /// transaction block now() is the transaction's start, earlier than this
+    /// statement's timestamp; outside one they are equal. In a failed
+    /// transaction the query itself fails with 25P02.
+    async fn refresh_tx_status(&self) {
+        let status = match self
+            .client
+            .query_one("SELECT now() = statement_timestamp()", &[])
+            .await
+        {
+            Ok(row) if row.get::<_, bool>(0) => TxStatus::Idle,
+            Ok(_) => TxStatus::InTransaction,
+            Err(err) if err.code().map(|c| c.code()) == Some("25P02") => TxStatus::Failed,
+            Err(_) => return, // keep the tracked status
+        };
+        tx::set(&self.tx, status);
     }
 
     fn closed_error(&self) -> Option<DbError> {
@@ -160,22 +217,64 @@ impl PgConnection {
     }
 }
 
-/// tokio-postgres hands back the socket as a future that must be polled for the
-/// client to work, so it runs on its own task. Notices it reads go to `notices`;
-/// its error is kept for later calls.
-async fn spawn_connection<T>(
+type Opened = (Client, Arc<Mutex<Option<DbError>>>);
+
+/// Over TCP (or a Unix socket), as tokio-postgres connects itself.
+async fn connect_direct<T>(
     config: &tokio_postgres::Config,
     tls: T,
-    notices: NoticeQueue,
-) -> DbResult<(Client, Arc<Mutex<Option<DbError>>>)>
+    sinks: Sinks,
+) -> DbResult<Opened>
 where
-    T: MakeTlsConnect<Socket>,
+    T: MakeTlsConnect<tokio_postgres::Socket>,
     T::Stream: Send + 'static,
     T::TlsConnect: Send,
-    <T::TlsConnect as TlsConnect<Socket>>::Future: Send,
+    <T::TlsConnect as TlsConnect<tokio_postgres::Socket>>::Future: Send,
 {
-    let (client, mut connection) = config.connect(tls).await.map_err(map_err)?;
+    let (client, connection) = config.connect(tls).await.map_err(map_err)?;
+    Ok((client, spawn_task(connection, sinks)))
+}
 
+/// Over an already open stream (an SSH channel).
+async fn connect_raw<S, T>(
+    config: &tokio_postgres::Config,
+    stream: S,
+    tls: T,
+    sinks: Sinks,
+) -> DbResult<Opened>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: TlsConnect<S> + Send,
+    T::Stream: Send + 'static,
+    T::Future: Send,
+{
+    let timeout = config
+        .get_connect_timeout()
+        .copied()
+        .unwrap_or(std::time::Duration::from_secs(10));
+    let (client, connection) = tokio::time::timeout(timeout, config.connect_raw(stream, tls))
+        .await
+        .map_err(|_| {
+            DbError::new(
+                ErrorKind::Timeout,
+                "timed out connecting through the SSH tunnel",
+            )
+        })?
+        .map_err(map_err)?;
+    Ok((client, spawn_task(connection, sinks)))
+}
+
+/// tokio-postgres hands back the socket as a future that must be polled for the
+/// client to work, so it runs on its own task. Notices and notifications it
+/// reads go to `sinks`; its error is kept for later calls.
+fn spawn_task<S, T>(
+    mut connection: tokio_postgres::Connection<S, T>,
+    sinks: Sinks,
+) -> Arc<Mutex<Option<DbError>>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let closed = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&closed);
     tokio::spawn(async move {
@@ -183,8 +282,19 @@ where
         // before the client sees that statement complete.
         loop {
             match futures::future::poll_fn(|cx| connection.poll_message(cx)).await {
-                Some(Ok(AsyncMessage::Notice(notice))) => push_notice(&notices, to_notice(&notice)),
-                Some(Ok(_)) => {} // TODO: LISTEN/NOTIFY
+                Some(Ok(AsyncMessage::Notice(notice))) => {
+                    push_notice(&sinks.notices, to_notice(&notice))
+                }
+                Some(Ok(AsyncMessage::Notification(n))) => {
+                    // No receivers is fine: nobody is watching right now.
+                    let _ = sinks.notifications.send(Notification {
+                        channel: n.channel().to_owned(),
+                        payload: n.payload().to_owned(),
+                        process_id: n.process_id(),
+                        received_at: chrono::Utc::now(),
+                    });
+                }
+                Some(Ok(_)) => {}
                 Some(Err(err)) => {
                     *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(map_err(err));
                     break;
@@ -193,7 +303,7 @@ where
             }
         }
     });
-    Ok((client, closed))
+    closed
 }
 
 fn push_notice(queue: &NoticeQueue, notice: Notice) {
@@ -228,12 +338,6 @@ fn to_notice(db: &tokio_postgres::error::DbError) -> Notice {
         detail: db.detail().map(str::to_owned),
         hint: db.hint().map(str::to_owned),
     }
-}
-
-/// The server refuses to prepare "SELECT 1; SELECT 2".
-/// TODO: the message is localized (lc_messages); only English is recognised.
-fn is_multi_statement(err: &DbError) -> bool {
-    err.code.as_deref() == Some("42601") && err.message.contains("multiple commands")
 }
 
 async fn server_version(client: &Client) -> DbResult<ServerVersion> {
@@ -286,16 +390,19 @@ impl Connection for PgConnection {
     /// otherwise the affected row count.
     async fn execute(&self, sql: &str) -> DbResult<ExecOutcome> {
         self.check_open()?;
+        let command = TxCommand::of(sql);
         let result = self.run(sql).await;
-        self.track(TxCommand::of(sql), &result);
+        self.track(command, &result);
+        // Only once a CALL fully finished: with OUT parameters it returns
+        // rows, and a query now would wait behind the unread stream.
+        if command == TxCommand::Call && matches!(result, Ok(ExecOutcome::Affected { .. })) {
+            self.refresh_tx_status().await;
+        }
         self.with_cause(result)
     }
 
     fn cancel_handle(&self) -> Box<dyn CancelHandle> {
-        Box::new(PgCancel {
-            token: self.client.cancel_token(),
-            tls: self.tls.clone(),
-        })
+        Box::new(self.cancel())
     }
 
     async fn introspect(&self, scope: IntrospectScope) -> DbResult<SchemaSnapshot> {
@@ -319,5 +426,41 @@ impl Connection for PgConnection {
     fn take_notices(&self) -> Vec<Notice> {
         let mut queue = self.notices.lock().unwrap_or_else(|e| e.into_inner());
         queue.drain(..).collect()
+    }
+
+    fn subscribe_notifications(&self) -> Option<broadcast::Receiver<Notification>> {
+        Some(self.notifications.subscribe())
+    }
+
+    async fn listen(&self, channel: &str) -> DbResult<()> {
+        self.simple(&format!("LISTEN {}", self.dialect.quote_ident(channel)))
+            .await
+    }
+
+    async fn unlisten(&self, channel: &str) -> DbResult<()> {
+        self.simple(&format!("UNLISTEN {}", self.dialect.quote_ident(channel)))
+            .await
+    }
+
+    async fn notify(&self, channel: &str, payload: &str) -> DbResult<()> {
+        self.check_open()?;
+        let result = self
+            .client
+            .execute("SELECT pg_notify($1, $2)", &[&channel, &payload])
+            .await
+            .map(|_| ())
+            .map_err(map_err);
+        self.track(TxCommand::Other, &result);
+        self.with_cause(result)
+    }
+}
+
+impl PgConnection {
+    /// A statement without results, with transaction tracking.
+    async fn simple(&self, sql: &str) -> DbResult<()> {
+        self.check_open()?;
+        let result = self.client.batch_execute(sql).await.map_err(map_err);
+        self.track(TxCommand::Other, &result);
+        self.with_cause(result)
     }
 }

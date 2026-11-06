@@ -2,20 +2,16 @@
 import { displayQualifiedName, ident } from "@/lib/sql-ident";
 import type { Column } from "@/lib/ipc";
 
-/** Rows "Open data" fetches. */
-// TODO: page through more than this, sorted on the server (see TODO.md)
-export const OPEN_DATA_LIMIT = 500;
-
-/** What "Open data" runs. */
+/** What "Open data" runs. Every row: the console pages through the held result, which stops at the memory limit in Settings. */
 export function selectAllSql(schema: string, table: string): string {
-  return `SELECT *\nFROM ${displayQualifiedName(schema, table)}\nLIMIT ${OPEN_DATA_LIMIT};\n`;
+  return `SELECT *\nFROM ${displayQualifiedName(schema, table)};\n`;
 }
 
 /** "New SELECT": every column spelled out, ready to trim. */
 export function selectColumnsSql(schema: string, table: string, columns: Column[]): string {
   if (columns.length === 0) return selectAllSql(schema, table);
   const list = columns.map((c) => `  ${ident(c.name)}`).join(",\n");
-  return `SELECT\n${list}\nFROM ${displayQualifiedName(schema, table)}\nLIMIT ${OPEN_DATA_LIMIT};\n`;
+  return `SELECT\n${list}\nFROM ${displayQualifiedName(schema, table)};\n`;
 }
 
 /** "New INSERT": one row, DEFAULT where the column has one, else NULL, each labelled. */

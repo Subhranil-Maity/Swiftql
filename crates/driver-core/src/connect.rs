@@ -16,6 +16,58 @@ pub struct ConnectConfig {
     pub tunnel: Option<SshTunnel>,
     #[serde(default)]
     pub options: HashMap<String, String>, // driver extras: application_name, search_path…
+    /// From the app settings, not the saved connection.
+    #[serde(default)]
+    pub timeouts: Timeouts,
+    /// How SSH host keys are checked; set by the app before connecting.
+    #[serde(skip)]
+    pub host_keys: Option<HostKeyCheck>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct Timeouts {
+    /// Seconds to reach the server (and the SSH host). None = driver default.
+    pub connect_secs: Option<u32>,
+    /// TCP / SSH keepalive interval in seconds. None or 0 = off.
+    pub keepalive_secs: Option<u32>,
+}
+
+/// SSH host key checking: which files list known hosts, and what to do with
+/// a host that isn't in them. A key that differs from a known one is always
+/// refused.
+#[derive(Debug, Clone)]
+pub struct HostKeyCheck {
+    pub policy: HostKeyPolicy,
+    /// Read only: the user's `~/.ssh/known_hosts`.
+    pub user_known_hosts: Option<PathBuf>,
+    /// Read and written: hosts trusted in SwiftQL.
+    pub app_known_hosts: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum HostKeyPolicy {
+    /// Fail with `SSH_HOST_UNKNOWN` so the user can look at the fingerprint.
+    #[default]
+    Ask,
+    /// Trust and remember it.
+    AcceptNew,
+    /// Refuse it.
+    Strict,
+}
+
+/// `DbError::code` values for SSH problems the UI can act on.
+pub mod ssh_codes {
+    /// The host key isn't known; `detail` is JSON: host, port, keyType,
+    /// fingerprint, key (OpenSSH public key line).
+    pub const HOST_UNKNOWN: &str = "SSH_HOST_UNKNOWN";
+    /// The host key differs from the known one.
+    pub const HOST_CHANGED: &str = "SSH_HOST_CHANGED";
+    pub const PASSWORD_REQUIRED: &str = "SSH_PASSWORD_REQUIRED";
+    pub const PASSPHRASE_REQUIRED: &str = "SSH_PASSPHRASE_REQUIRED";
 }
 
 // ---------- where the database is ----------
@@ -150,19 +202,45 @@ pub enum SslMode {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct SshTunnel {
+    /// Where host, port, user and keys come from.
+    #[serde(default)]
+    pub source: SshSource,
+    /// With `SshSource::Config`, an empty host / user / port uses the config's.
     pub host: String,
     pub port: Option<u16>, // None = 22
     pub user: String,
     pub auth: SshAuth,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SshSource {
+    /// Host, port, user and auth as entered.
+    #[default]
+    Manual,
+    /// A `Host` entry of `~/.ssh/config`, resolved when connecting so later
+    /// edits apply: HostName, User, Port, IdentityFile, ProxyJump.
+    Config { alias: String },
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SshAuth {
-    Password { password: Secret },
-    Key { path: PathBuf, passphrase: Option<Secret> },
+    Password {
+        password: Secret,
+    },
+    /// A password that isn't saved; the app asks for it.
+    PasswordPrompt,
+    Key {
+        path: PathBuf,
+        passphrase: Option<Secret>,
+    },
     Agent,
+    /// IdentityFile keys from `~/.ssh/config`, then the default keys
+    /// (`~/.ssh/id_ed25519`, ...), then the agent, as `ssh` does.
+    Auto,
 }
 
 // ---------- secrets ----------

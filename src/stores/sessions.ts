@@ -10,7 +10,8 @@ interface SessionsState {
   /** Saved connection currently being opened. */
   connectingId: string | null;
   /** Opens a saved connection and makes it active. Throws `IpcError`. */
-  connect: (connectionId: string, password?: string) => Promise<SessionInfo>;
+  /** `password` / `sshSecret` answer a prompt and are never saved. */
+  connect: (connectionId: string, password?: string, sshSecret?: string) => Promise<SessionInfo>;
   disconnect: (sessionId: string) => Promise<void>;
   /** Records the transaction status a run left the session in. */
   setTxStatus: (sessionId: string, txStatus: TxStatus) => void;
@@ -20,10 +21,10 @@ export const useSessionsStore = create<SessionsState>()((set) => ({
   sessions: {},
   activeSessionId: null,
   connectingId: null,
-  connect: async (connectionId, password) => {
+  connect: async (connectionId, password, sshSecret) => {
     set({ connectingId: connectionId });
     try {
-      const session = await api.connect(connectionId, password ?? null);
+      const session = await api.connect(connectionId, password ?? null, sshSecret ?? null);
       set((s) => ({
         sessions: { ...s.sessions, [session.sessionId]: session },
         activeSessionId: session.sessionId,

@@ -1,11 +1,13 @@
-//! Running console SQL: statements run one by one on a session, and their
-//! rows, notices and outcomes stream to the UI over a channel.
+//! Running console SQL: statements run one by one on a session. Their rows
+//! are read into a held result (see `results`), and the first page, notices
+//! and outcomes stream to the UI over a channel.
 
 use std::{
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
+use config_store::settings::{QuerySettings, TransactionMode};
 use driver_core::{
     connection::{ExecOutcome, RowStream, TxStatus},
     error::{DbError, ErrorKind},
@@ -18,10 +20,20 @@ use specta::Type;
 use tauri::{State, ipc::Channel};
 use uuid::Uuid;
 
-use crate::session::{Session, SessionManager};
+use crate::{
+    config::Config,
+    results::{self, ResultState, SharedBuffer},
+    session::{Session, SessionManager, TIMEOUT_UNKNOWN},
+};
 
-/// Rows per `rows` event.
-const BATCH_SIZE: usize = 200;
+/// Rows read from the driver at a time.
+const BATCH_SIZE: usize = 500;
+
+/// How often a `progress` event is sent while rows are read.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// SQLSTATE for both a user cancel and `statement_timeout`.
+const QUERY_CANCELED: &str = "57014";
 
 /// What happens during a run, in order. `index` is the statement's position
 /// in the list passed to `run_statements`.
@@ -31,14 +43,23 @@ pub enum RunEvent {
     StatementStarted {
         index: u32,
     },
-    /// Before any `rows`; only for statements that return rows.
+    /// Before any `rows`; only for statements that return rows. The rows are
+    /// held under `resultId` for `fetch_rows`.
+    #[serde(rename_all = "camelCase")]
     Columns {
         index: u32,
         columns: Vec<ColumnMeta>,
+        result_id: Uuid,
     },
+    /// The first rows of a result (up to `query.pageSize`), so they show at once.
     Rows {
         index: u32,
         rows: Vec<Vec<Value>>,
+    },
+    /// Rows held so far, while they're read.
+    Progress {
+        index: u32,
+        buffered: u64,
     },
     Notice {
         index: u32,
@@ -49,11 +70,11 @@ pub enum RunEvent {
         index: u32,
         /// e.g. "INSERT 0 3", "CREATE TABLE", "SELECT 1000".
         tag: String,
-        /// Rows returned (as far as they were read) or changed.
+        /// Rows held or changed.
         rows: u64,
         elapsed_ms: f64,
-        /// The row limit was reached and the rest was not fetched.
-        truncated: bool,
+        /// For statements that return rows: whether every row was read.
+        result: Option<ResultState>,
     },
     #[serde(rename_all = "camelCase")]
     StatementFailed {
@@ -77,6 +98,28 @@ pub struct RunSummary {
     pub tx_status: TxStatus,
 }
 
+/// How much of a result is held, from the settings.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// Rows sent with the `rows` event.
+    pub first_page: usize,
+    pub max_rows: u64,
+    pub max_bytes: u64,
+}
+
+impl Limits {
+    pub fn from_settings(query: &QuerySettings) -> Self {
+        Self {
+            first_page: query.page_size as usize,
+            max_rows: match query.max_rows_held {
+                0 => u64::MAX,
+                n => u64::from(n),
+            },
+            max_bytes: u64::from(query.max_result_mb) * 1024 * 1024,
+        }
+    }
+}
+
 fn ms(elapsed: Duration) -> f64 {
     elapsed.as_secs_f64() * 1000.0
 }
@@ -88,13 +131,16 @@ fn not_found(session_id: Uuid) -> DbError {
     )
 }
 
-fn cancelled_error() -> DbError {
-    DbError::new(ErrorKind::Cancelled, "Cancelled")
+fn busy() -> DbError {
+    DbError::new(
+        ErrorKind::Busy,
+        "A query is already running in this session",
+    )
 }
 
 /// Runs `statements` in order on a session and stops at the first error.
-/// Statements that return rows send at most `row_limit` of them (0 = all);
-/// the rest is cancelled on the server.
+/// Rows are held up to the `query.maxRowsHeld` / `query.maxResultMb` caps;
+/// past them the query is cancelled on the server.
 ///
 /// Fails with `NotFound` for an unknown session and `Busy` while another run
 /// holds the session. Statement errors are `statementFailed` events, not
@@ -102,22 +148,29 @@ fn cancelled_error() -> DbError {
 #[tauri::command]
 #[specta::specta]
 pub async fn run_statements(
+    config: State<'_, Config>,
     sessions: State<'_, SessionManager>,
     session_id: Uuid,
     statements: Vec<String>,
-    row_limit: u32,
+    on_event: Channel<RunEvent>,
+) -> Result<RunSummary, DbError> {
+    let query = config.settings().get().query;
+    run_with(&sessions, session_id, statements, &query, on_event).await
+}
+
+/// `run_statements` without the managed settings, for tests.
+pub async fn run_with(
+    sessions: &SessionManager,
+    session_id: Uuid,
+    statements: Vec<String>,
+    query: &QuerySettings,
     on_event: Channel<RunEvent>,
 ) -> Result<RunSummary, DbError> {
     let session = sessions
         .get(session_id)
         .await
         .ok_or_else(|| not_found(session_id))?;
-    let _running = session.run_lock.try_lock().map_err(|_| {
-        DbError::new(
-            ErrorKind::Busy,
-            "A query is already running in this session",
-        )
-    })?;
+    let _running = session.run_lock.try_lock().map_err(|_| busy())?;
     session.cancelled.store(false, Ordering::SeqCst);
 
     let emit = |event: RunEvent| {
@@ -126,17 +179,41 @@ pub async fn run_statements(
             tracing::debug!(error = %err, "run event not delivered");
         }
     };
-    let limit = match row_limit {
-        0 => u64::MAX,
-        n => u64::from(n),
-    };
-    Ok(run(&session, &statements, limit, &emit).await)
+    prepare(&session, query).await;
+    Ok(run(&session, &statements, Limits::from_settings(query), &emit).await)
+}
+
+/// Applies the query timeout and, in manual transaction mode, opens a
+/// transaction. Only while idle: inside a transaction a SET would be undone
+/// by a rollback, and in a failed one it can't run at all.
+async fn prepare(session: &Session, query: &QuerySettings) {
+    if session.conn.tx_status() != TxStatus::Idle {
+        return;
+    }
+    let wanted = query.query_timeout_secs;
+    if session.applied_timeout.load(Ordering::SeqCst) != wanted {
+        let sql = format!("SET statement_timeout = {}", u64::from(wanted) * 1000);
+        match session.conn.execute(&sql).await {
+            Ok(_) => session.applied_timeout.store(wanted, Ordering::SeqCst),
+            Err(err) => {
+                session
+                    .applied_timeout
+                    .store(TIMEOUT_UNKNOWN, Ordering::SeqCst);
+                tracing::warn!(error = %err, "couldn't set statement_timeout");
+            }
+        }
+    }
+    if query.transaction_mode == TransactionMode::Manual
+        && let Err(err) = session.conn.execute("BEGIN").await
+    {
+        tracing::warn!(error = %err, "couldn't open a transaction");
+    }
 }
 
 async fn run(
     session: &Session,
     statements: &[String],
-    limit: u64,
+    limits: Limits,
     emit: &impl Fn(RunEvent),
 ) -> RunSummary {
     let started = Instant::now();
@@ -154,21 +231,29 @@ async fn run(
         }
         emit(RunEvent::StatementStarted { index });
         let statement_started = Instant::now();
-        let result = run_one(session, index, sql, limit, emit).await;
+        *session.in_flight.lock().await = true;
+        let result = run_one(session, index, sql, limits, emit).await;
+        *session.in_flight.lock().await = false;
         drain_notices(session, index, emit);
         let elapsed_ms = ms(statement_started.elapsed());
         match result {
-            Ok((tag, rows, truncated)) => {
+            Ok((tag, rows, result)) => {
                 executed += 1;
                 emit(RunEvent::StatementFinished {
                     index,
                     tag,
                     rows,
                     elapsed_ms,
-                    truncated,
+                    result,
                 });
+                if result == Some(ResultState::Cancelled) {
+                    // Stop kept the rows read so far; the rest of the script is skipped.
+                    cancelled = true;
+                    break;
+                }
             }
             Err(error) => {
+                let error = classify_cancel(error, session);
                 cancelled = error.kind == ErrorKind::Cancelled;
                 failed_at = Some(index);
                 emit(RunEvent::StatementFailed {
@@ -190,72 +275,121 @@ async fn run(
     }
 }
 
-/// One statement: (tag, row count, truncated).
+/// A user cancel and `statement_timeout` share SQLSTATE 57014; tell them
+/// apart by whether this session sent a cancel, not by the (localized) message.
+fn classify_cancel(mut error: DbError, session: &Session) -> DbError {
+    if error.code.as_deref() == Some(QUERY_CANCELED) {
+        if session.cancelled.load(Ordering::SeqCst) {
+            error.kind = ErrorKind::Cancelled;
+        } else {
+            error.kind = ErrorKind::Timeout;
+            error.message = "Query timed out (statement_timeout)".into();
+        }
+    }
+    error
+}
+
+/// One statement: (tag, rows held or changed, result state for row results).
 async fn run_one(
     session: &Session,
     index: u32,
     sql: &str,
-    limit: u64,
+    limits: Limits,
     emit: &impl Fn(RunEvent),
-) -> Result<(String, u64, bool), DbError> {
+) -> Result<(String, u64, Option<ResultState>), DbError> {
     let dialect = session.conn.dialect();
     match session.conn.execute(sql).await? {
         ExecOutcome::Affected { rows, command } => {
-            Ok((dialect.command_tag(&command, rows), rows, false))
+            Ok((dialect.command_tag(&command, rows), rows, None))
         }
         ExecOutcome::Rows {
             columns,
             stream,
             command,
         } => {
-            emit(RunEvent::Columns { index, columns });
-            let (rows, truncated) = stream_rows(session, index, stream, limit, emit).await?;
-            Ok((dialect.command_tag(&command, rows), rows, truncated))
+            let (result_id, buffer) = session.results.insert(columns.clone());
+            emit(RunEvent::Columns {
+                index,
+                columns,
+                result_id,
+            });
+            let (rows, state) = read_rows(session, index, stream, &buffer, limits, emit).await?;
+            Ok((dialect.command_tag(&command, rows), rows, Some(state)))
         }
     }
 }
 
-/// Sends rows until the stream ends or `limit` is reached: (rows sent, truncated).
-async fn stream_rows(
+/// Reads rows into `buffer` until the stream ends, a cap is reached or the
+/// user stops it. Sends the first page and progress on the way.
+async fn read_rows(
     session: &Session,
     index: u32,
     mut stream: Box<dyn RowStream>,
-    limit: u64,
+    buffer: &SharedBuffer,
+    limits: Limits,
     emit: &impl Fn(RunEvent),
-) -> Result<(u64, bool), DbError> {
-    let mut sent = 0u64;
+) -> Result<(u64, ResultState), DbError> {
+    let mut held = 0u64;
+    let mut sent = 0usize;
+    let mut last_progress = Instant::now();
+    let set_state = |state| results::write(buffer).state = state;
+
     loop {
         if session.cancelled.load(Ordering::SeqCst) {
             // Rows already buffered would otherwise keep coming after Stop.
             let _ = stream.close().await;
-            return Err(cancelled_error());
+            set_state(ResultState::Cancelled);
+            return Ok((held, ResultState::Cancelled));
         }
-        let want = (limit - sent).min(BATCH_SIZE as u64) as usize;
-        let batch = match stream.next_batch(want).await {
+        let batch = match stream.next_batch(BATCH_SIZE).await {
             Ok(Some(batch)) => batch,
             Ok(None) => break,
             Err(err) => {
                 let _ = stream.close().await;
+                if session.cancelled.load(Ordering::SeqCst) {
+                    set_state(ResultState::Cancelled);
+                    return Ok((held, ResultState::Cancelled));
+                }
+                set_state(ResultState::Failed);
                 return Err(err);
             }
         };
-        sent += batch.rows.len() as u64;
-        emit(RunEvent::Rows {
-            index,
-            rows: batch.rows,
-        });
+        held += batch.rows.len() as u64;
+        if sent < limits.first_page {
+            let take = (limits.first_page - sent).min(batch.rows.len());
+            sent += take;
+            emit(RunEvent::Rows {
+                index,
+                rows: batch.rows[..take].to_vec(),
+            });
+        }
+        let has_more = batch.has_more;
+        let bytes = {
+            let mut b = results::write(buffer);
+            b.push_rows(batch.rows);
+            b.est_bytes
+        };
         drain_notices(session, index, emit);
-        if !batch.has_more {
+        if last_progress.elapsed() >= PROGRESS_EVERY {
+            last_progress = Instant::now();
+            emit(RunEvent::Progress {
+                index,
+                buffered: held,
+            });
+        }
+        if !has_more {
             break;
         }
-        if sent >= limit {
+        if held >= limits.max_rows || bytes >= limits.max_bytes {
             // Cancels the query and reads up to its end, so the session is free.
             stream.close().await?;
-            return Ok((sent, true));
+            set_state(ResultState::Truncated);
+            return Ok((held, ResultState::Truncated));
         }
     }
     stream.close().await?;
-    Ok((sent, false))
+    set_state(ResultState::Complete);
+    Ok((held, ResultState::Complete))
 }
 
 fn drain_notices(session: &Session, index: u32, emit: &impl Fn(RunEvent)) {
@@ -265,7 +399,8 @@ fn drain_notices(session: &Session, index: u32, emit: &impl Fn(RunEvent)) {
 }
 
 /// Stops the session's run, if there is one. The running statement fails
-/// with `Cancelled` and the rest are not started.
+/// with `Cancelled` (or, while rows are read, keeps the rows read so far)
+/// and the rest are not started.
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_run(
@@ -277,12 +412,37 @@ pub async fn cancel_run(
         .await
         .ok_or_else(|| not_found(session_id))?;
     // Not checked against run_lock: taking it, even briefly, could make a run
-    // that is just starting fail with Busy. With nothing running, the server
-    // ignores the cancel and the next run clears the flag.
+    // that is just starting fail with Busy.
     session.cancelled.store(true, Ordering::SeqCst);
-    // TODO: a cancel that reaches the server just after a statement finished can
-    // hit the next one; harmless here since the run stops before starting it.
-    session.conn.cancel_handle().cancel().await
+    // Only cancel on the server while a statement is in flight; the run
+    // can't mark it finished while this lock is held.
+    let in_flight = session.in_flight.lock().await;
+    if *in_flight {
+        // TODO: the server can still finish the statement between our check
+        // and the cancel arriving; the cancel is then ignored, or (rarely) hits
+        // the run's next statement, which then fails as Cancelled.
+        session.conn.cancel_handle().cancel().await?;
+    }
+    Ok(())
+}
+
+/// Ends the open transaction with COMMIT or ROLLBACK. Fails with `Busy`
+/// while a run holds the session.
+#[tauri::command]
+#[specta::specta]
+pub async fn end_transaction(
+    sessions: State<'_, SessionManager>,
+    session_id: Uuid,
+    commit: bool,
+) -> Result<TxStatus, DbError> {
+    let session = sessions
+        .get(session_id)
+        .await
+        .ok_or_else(|| not_found(session_id))?;
+    let _running = session.run_lock.try_lock().map_err(|_| busy())?;
+    let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+    session.conn.execute(sql).await?;
+    Ok(session.conn.tx_status())
 }
 
 /// Runs against a real server:
@@ -335,6 +495,15 @@ mod tests {
         statements.iter().map(|s| s.to_string()).collect()
     }
 
+    /// Query settings holding at most `max_rows` rows, sending them all as the first page.
+    fn settings(max_rows: u32) -> QuerySettings {
+        QuerySettings {
+            page_size: max_rows.max(50),
+            max_rows_held: max_rows,
+            ..QuerySettings::default()
+        }
+    }
+
     /// "statementStarted 0", "columns 0", ... for comparing the order.
     fn names(events: &[Json]) -> Vec<String> {
         events
@@ -354,7 +523,7 @@ mod tests {
             "DO $$ BEGIN RAISE NOTICE 'hi'; END $$",
             "INSERT INTO t VALUES (1), (2) RETURNING a",
         ]);
-        let summary = run_statements(app.state(), id, statements, 1000, channel)
+        let summary = run_with(&app.state(), id, statements, &settings(1000), channel)
             .await
             .unwrap();
         assert_eq!((summary.executed, summary.failed_at), (3, None));
@@ -391,7 +560,7 @@ mod tests {
         let id = open_session(&app).await;
         let (channel, events) = recorder();
         let statements = sql(&["SELECT generate_series(1, 1500)", "SELECT 42"]);
-        let summary = run_statements(app.state(), id, statements, 1000, channel)
+        let summary = run_with(&app.state(), id, statements, &settings(1000), channel)
             .await
             .unwrap();
         assert_eq!(summary.executed, 2); // the session is usable after the cancel
@@ -407,9 +576,9 @@ mod tests {
             .iter()
             .filter(|e| e["event"] == "statementFinished")
             .collect();
-        assert_eq!(finished[0]["truncated"], true);
+        assert_eq!(finished[0]["result"], "truncated");
         assert_eq!(finished[0]["tag"], "SELECT 1000");
-        assert_eq!(finished[1]["truncated"], false);
+        assert_eq!(finished[1]["result"], "complete");
         assert_eq!(finished[1]["tag"], "SELECT 1");
     }
 
@@ -420,7 +589,7 @@ mod tests {
         let id = open_session(&app).await;
         let (channel, events) = recorder();
         let statements = sql(&["SELECT 1", "SELEC 1", "SELECT 2"]);
-        let summary = run_statements(app.state(), id, statements, 1000, channel)
+        let summary = run_with(&app.state(), id, statements, &settings(1000), channel)
             .await
             .unwrap();
         assert_eq!((summary.executed, summary.failed_at), (1, Some(1)));
@@ -443,7 +612,7 @@ mod tests {
         let handle = app.handle().clone();
         let long = tokio::spawn(async move {
             let statements = sql(&["SELECT pg_sleep(30)", "SELECT 1"]);
-            run_statements(handle.state(), id, statements, 1000, channel).await
+            run_with(&handle.state(), id, statements, &settings(1000), channel).await
         });
         // Wait until the first run holds the lock and has sent its statement.
         while started.lock().unwrap().is_empty() {
@@ -451,9 +620,15 @@ mod tests {
         }
 
         let (channel, _) = recorder();
-        let err = run_statements(app.state(), id, sql(&["SELECT 1"]), 1000, channel)
-            .await
-            .unwrap_err();
+        let err = run_with(
+            &app.state(),
+            id,
+            sql(&["SELECT 1"]),
+            &settings(1000),
+            channel,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Busy);
 
         // Let the statement reach the server before cancelling it.
@@ -468,9 +643,15 @@ mod tests {
     async fn unknown_session() {
         let app = app();
         let (channel, _) = recorder();
-        let err = run_statements(app.state(), Uuid::new_v4(), sql(&["SELECT 1"]), 10, channel)
-            .await
-            .unwrap_err();
+        let err = run_with(
+            &app.state(),
+            Uuid::new_v4(),
+            sql(&["SELECT 1"]),
+            &settings(10),
+            channel,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.kind, ErrorKind::NotFound);
         assert_eq!(
             cancel_run(app.state(), Uuid::new_v4())

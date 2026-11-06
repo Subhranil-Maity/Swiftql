@@ -1,18 +1,33 @@
-/** Notes under the grid: rows left unfetched, and what sorting covers then. */
+import { Spinner } from "@/components/ui/spinner";
+import type { ResultState } from "@/lib/ipc";
+
+/** Under the grid: loading progress, or why reading stopped before the end. */
 export function ResultFooter({
-  truncated,
-  rowLimit,
-  sorted,
+  state,
+  total,
+  error,
 }: {
-  truncated: boolean;
-  rowLimit: number;
-  sorted: boolean;
+  /** Undefined while rows are still read. */
+  state: ResultState | undefined;
+  total: number;
+  error: string | null;
 }) {
-  if (!truncated) return null;
-  return (
-    <p className="shrink-0 border-t px-3 py-1.5 text-xs text-muted-foreground">
-      First {rowLimit.toLocaleString()} rows. The rest weren't fetched.
-      {sorted && ` Sorting covers the ${rowLimit.toLocaleString()} fetched rows.`}
-    </p>
-  );
+  const count = total.toLocaleString();
+  let note: React.ReactNode = null;
+  if (error) {
+    note = <span className="text-destructive">Couldn't load rows: {error}</span>;
+  } else if (state === undefined || state === "loading") {
+    note = (
+      <span className="flex items-center gap-1.5">
+        <Spinner className="size-3" />
+        Loading… {count} rows
+      </span>
+    );
+  } else if (state === "truncated") {
+    note = `${count} rows: the memory limit was reached and the rest weren't read. Raise it in Settings → Query & results.`;
+  } else if (state === "cancelled") {
+    note = `Stopped after ${count} rows.`;
+  }
+  if (!note) return null;
+  return <div className="shrink-0 border-t px-3 py-1.5 text-xs text-muted-foreground">{note}</div>;
 }

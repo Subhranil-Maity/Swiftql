@@ -2,7 +2,8 @@ use std::{collections::HashMap, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use driver_core::connect::{
-    Auth, ConnectConfig, Secret, SshAuth, SshTunnel, Target, TlsConfig, TokenProvider,
+    Auth, ConnectConfig, Secret, SshAuth, SshSource, SshTunnel, Target, Timeouts, TlsConfig,
+    TokenProvider,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -40,20 +41,40 @@ pub struct SavedConnection {
 /// `Auth` without secret values; `saved` says whether the keyring has one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum StoredAuth {
     None,
-    Password { user: String, saved: bool },
-    PasswordPrompt { user: String },
-    PgPass { user: String },
-    ClientCert { user: String, cert: PathBuf, key: PathBuf },
-    Token { user: String, provider: TokenProvider },
+    Password {
+        user: String,
+        saved: bool,
+    },
+    PasswordPrompt {
+        user: String,
+    },
+    PgPass {
+        user: String,
+    },
+    ClientCert {
+        user: String,
+        cert: PathBuf,
+        key: PathBuf,
+    },
+    Token {
+        user: String,
+        provider: TokenProvider,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(rename_all = "camelCase")]
 pub struct StoredTunnel {
+    #[serde(default)]
+    pub source: SshSource,
     pub host: String,
     pub port: Option<u16>,
     pub user: String,
@@ -62,11 +83,22 @@ pub struct StoredTunnel {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum StoredSshAuth {
-    Password { saved: bool },
-    Key { path: PathBuf, passphrase_saved: bool },
+    Password {
+        saved: bool,
+    },
+    Key {
+        path: PathBuf,
+        passphrase_saved: bool,
+    },
     Agent,
+    /// Keys from ~/.ssh/config, the default keys, then the agent.
+    Auto,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,10 +223,14 @@ impl<'a> ConnectionRepo<'a> {
     pub fn save(&self, input: ConnectionInput) -> ConfigResult<SavedConnection> {
         let name = input.name.trim().to_owned();
         if name.is_empty() {
-            return Err(ConfigError::Invalid("connection name must not be empty".into()));
+            return Err(ConfigError::Invalid(
+                "connection name must not be empty".into(),
+            ));
         }
         if input.driver.trim().is_empty() {
-            return Err(ConfigError::Invalid("connection driver must not be empty".into()));
+            return Err(ConfigError::Invalid(
+                "connection driver must not be empty".into(),
+            ));
         }
 
         let conn = self.db.lock();
@@ -294,14 +330,20 @@ impl<'a> ConnectionRepo<'a> {
         let mut config: StoredConfig = serde_json::from_str(&json)?;
         self.secrets.delete(SecretRef::new(id, kind))?;
 
-        match (kind, &mut config.auth, config.tunnel.as_mut().map(|t| &mut t.auth)) {
+        match (
+            kind,
+            &mut config.auth,
+            config.tunnel.as_mut().map(|t| &mut t.auth),
+        ) {
             (SecretKind::DbPassword, StoredAuth::Password { saved, .. }, _) => *saved = false,
-            (SecretKind::SshPassword, _, Some(StoredSshAuth::Password { saved })) => {
-                *saved = false
-            }
-            (SecretKind::SshPassphrase, _, Some(StoredSshAuth::Key { passphrase_saved, .. })) => {
-                *passphrase_saved = false
-            }
+            (SecretKind::SshPassword, _, Some(StoredSshAuth::Password { saved })) => *saved = false,
+            (
+                SecretKind::SshPassphrase,
+                _,
+                Some(StoredSshAuth::Key {
+                    passphrase_saved, ..
+                }),
+            ) => *passphrase_saved = false,
             _ => {}
         }
         conn.execute(
@@ -315,8 +357,14 @@ impl<'a> ConnectionRepo<'a> {
     ///
     /// `prompt` is a password the user just typed and wins over a saved one.
     /// With neither, the auth comes back as `Auth::PasswordPrompt` so the app
-    /// knows to ask.
-    pub fn resolve(&self, id: Uuid, prompt: Option<Secret>) -> ConfigResult<ConnectConfig> {
+    /// knows to ask. `ssh_prompt` is the same for the SSH password or key
+    /// passphrase; a missing SSH password comes back as `SshAuth::PasswordPrompt`.
+    pub fn resolve(
+        &self,
+        id: Uuid,
+        prompt: Option<Secret>,
+        ssh_prompt: Option<Secret>,
+    ) -> ConfigResult<ConnectConfig> {
         let json = find(&self.db.lock(), id)?.ok_or_else(|| not_found(id))?;
         let config: StoredConfig = serde_json::from_str(&json)?;
 
@@ -325,7 +373,9 @@ impl<'a> ConnectionRepo<'a> {
             StoredAuth::Password { user, saved } => {
                 let password = match prompt {
                     Some(p) => Some(p),
-                    None if saved => self.secrets.get(SecretRef::new(id, SecretKind::DbPassword))?,
+                    None if saved => self
+                        .secrets
+                        .get(SecretRef::new(id, SecretKind::DbPassword))?,
                     None => None,
                 };
                 match password {
@@ -347,31 +397,36 @@ impl<'a> ConnectionRepo<'a> {
             Some(t) => {
                 let auth = match t.auth {
                     StoredSshAuth::Agent => SshAuth::Agent,
-                    StoredSshAuth::Password { .. } => {
-                        // TODO: SshAuth has no prompt variant yet, so a missing SSH password is an error
-                        let password = self
-                            .secrets
-                            .get(SecretRef::new(id, SecretKind::SshPassword))?
-                            .ok_or_else(|| {
-                                ConfigError::NotFound(
-                                    "SSH password is not saved for this connection".into(),
-                                )
-                            })?;
-                        SshAuth::Password { password }
+                    StoredSshAuth::Auto => SshAuth::Auto,
+                    StoredSshAuth::Password { saved } => {
+                        let password = match ssh_prompt {
+                            Some(p) => Some(p),
+                            None if saved => self
+                                .secrets
+                                .get(SecretRef::new(id, SecretKind::SshPassword))?,
+                            None => None,
+                        };
+                        match password {
+                            Some(password) => SshAuth::Password { password },
+                            None => SshAuth::PasswordPrompt,
+                        }
                     }
                     StoredSshAuth::Key {
                         path,
                         passphrase_saved,
                     } => SshAuth::Key {
                         path,
-                        passphrase: if passphrase_saved {
-                            self.secrets.get(SecretRef::new(id, SecretKind::SshPassphrase))?
-                        } else {
-                            None
+                        passphrase: match ssh_prompt {
+                            Some(p) => Some(p),
+                            None if passphrase_saved => self
+                                .secrets
+                                .get(SecretRef::new(id, SecretKind::SshPassphrase))?,
+                            None => None,
                         },
                     },
                 };
                 Some(SshTunnel {
+                    source: t.source,
                     host: t.host,
                     port: t.port,
                     user: t.user,
@@ -386,6 +441,8 @@ impl<'a> ConnectionRepo<'a> {
             tls: config.tls,
             tunnel,
             options: config.options,
+            timeouts: Timeouts::default(),
+            host_keys: None,
         })
     }
 
@@ -431,7 +488,7 @@ impl<'a> ConnectionRepo<'a> {
                             None => saved(SecretKind::SshPassphrase)?,
                         },
                     },
-                    SshAuth::Agent => SshAuth::Agent,
+                    other => other, // Agent, Auto, PasswordPrompt
                 };
                 Some(SshTunnel { auth, ..t })
             }
@@ -443,6 +500,8 @@ impl<'a> ConnectionRepo<'a> {
             tls: input.tls,
             tunnel,
             options: input.options,
+            timeouts: Timeouts::default(),
+            host_keys: None,
         })
     }
 
@@ -459,7 +518,9 @@ impl<'a> ConnectionRepo<'a> {
                     Auth::None => StoredAuth::None,
                     Auth::PasswordPrompt { user } => StoredAuth::PasswordPrompt { user },
                     Auth::PgPass { user } => StoredAuth::PgPass { user },
-                    Auth::ClientCert { user, cert, key } => StoredAuth::ClientCert { user, cert, key },
+                    Auth::ClientCert { user, cert, key } => {
+                        StoredAuth::ClientCert { user, cert, key }
+                    }
                     Auth::Token { user, provider } => StoredAuth::Token { user, provider },
                     Auth::Password { .. } => unreachable!(),
                 }
@@ -501,13 +562,23 @@ impl<'a> ConnectionRepo<'a> {
                     passphrase_saved,
                 }
             }
-            SshAuth::Agent => {
+            SshAuth::PasswordPrompt => {
                 self.secrets.delete(password)?;
                 self.secrets.delete(passphrase)?;
-                StoredSshAuth::Agent
+                StoredSshAuth::Password { saved: false }
+            }
+            SshAuth::Agent | SshAuth::Auto => {
+                self.secrets.delete(password)?;
+                self.secrets.delete(passphrase)?;
+                if matches!(t.auth, SshAuth::Auto) {
+                    StoredSshAuth::Auto
+                } else {
+                    StoredSshAuth::Agent
+                }
             }
         };
         Ok(Some(StoredTunnel {
+            source: t.source,
             host: t.host,
             port: t.port,
             user: t.user,
@@ -729,13 +800,15 @@ mod tests {
         let f = Fixture::new();
         let c = f.repo().save(pg("db", "s3cret", true)).unwrap();
         assert!(matches!(c.auth, StoredAuth::Password { saved: true, .. }));
-        assert_eq!(f.secret(c.id, SecretKind::DbPassword).as_deref(), Some("s3cret"));
+        assert_eq!(
+            f.secret(c.id, SecretKind::DbPassword).as_deref(),
+            Some("s3cret")
+        );
 
-        let json: String = f
-            .db
-            .lock()
-            .query_row("SELECT config_json FROM connections", [], |r| r.get(0))
-            .unwrap();
+        let json: String =
+            f.db.lock()
+                .query_row("SELECT config_json FROM connections", [], |r| r.get(0))
+                .unwrap();
         assert!(!json.contains("s3cret"));
         assert!(!serde_json::to_string(&c).unwrap().contains("s3cret"));
     }
@@ -749,7 +822,10 @@ mod tests {
         edit.id = Some(c.id);
         let c = repo.save(edit).unwrap();
         assert!(matches!(c.auth, StoredAuth::Password { saved: true, .. }));
-        assert_eq!(f.secret(c.id, SecretKind::DbPassword).as_deref(), Some("s3cret"));
+        assert_eq!(
+            f.secret(c.id, SecretKind::DbPassword).as_deref(),
+            Some("s3cret")
+        );
     }
 
     #[test]
@@ -771,7 +847,9 @@ mod tests {
         let c = repo.save(pg("db", "s3cret", true)).unwrap();
         let mut edit = pg("db", "", true);
         edit.id = Some(c.id);
-        edit.auth = Auth::PasswordPrompt { user: "alice".into() };
+        edit.auth = Auth::PasswordPrompt {
+            user: "alice".into(),
+        };
         repo.save(edit).unwrap();
         assert!(f.backend.is_empty());
     }
@@ -782,6 +860,7 @@ mod tests {
         let repo = f.repo();
         let mut i = pg("db", "s3cret", true);
         i.tunnel = Some(SshTunnel {
+            source: SshSource::Manual,
             host: "bastion".into(),
             port: None,
             user: "ops".into(),
@@ -793,7 +872,10 @@ mod tests {
         let c = repo.save(i).unwrap();
         assert!(matches!(
             c.tunnel.as_ref().unwrap().auth,
-            StoredSshAuth::Key { passphrase_saved: true, .. }
+            StoredSshAuth::Key {
+                passphrase_saved: true,
+                ..
+            }
         ));
         assert_eq!(f.backend.len(), 2);
         repo.delete(c.id).unwrap();
@@ -805,7 +887,7 @@ mod tests {
         let f = Fixture::new();
         let repo = f.repo();
         let c = repo.save(pg("db", "s3cret", true)).unwrap();
-        let config = repo.resolve(c.id, None).unwrap();
+        let config = repo.resolve(c.id, None, None).unwrap();
         assert!(matches!(config.target, Target::Host { ref host, .. } if host == "localhost"));
         match config.auth {
             Auth::Password { user, password } => {
@@ -815,8 +897,12 @@ mod tests {
             other => panic!("unexpected auth {other:?}"),
         }
         // A typed password wins over the saved one.
-        let config = repo.resolve(c.id, Some(Secret::new("typed"))).unwrap();
-        assert!(matches!(config.auth, Auth::Password { ref password, .. } if password.expose() == "typed"));
+        let config = repo
+            .resolve(c.id, Some(Secret::new("typed")), None)
+            .unwrap();
+        assert!(
+            matches!(config.auth, Auth::Password { ref password, .. } if password.expose() == "typed")
+        );
     }
 
     #[test]
@@ -824,10 +910,14 @@ mod tests {
         let f = Fixture::new();
         let repo = f.repo();
         let c = repo.save(pg("db", "s3cret", false)).unwrap();
-        let config = repo.resolve(c.id, None).unwrap();
+        let config = repo.resolve(c.id, None, None).unwrap();
         assert!(matches!(config.auth, Auth::PasswordPrompt { ref user } if user == "alice"));
-        let config = repo.resolve(c.id, Some(Secret::new("typed"))).unwrap();
-        assert!(matches!(config.auth, Auth::Password { ref password, .. } if password.expose() == "typed"));
+        let config = repo
+            .resolve(c.id, Some(Secret::new("typed")), None)
+            .unwrap();
+        assert!(
+            matches!(config.auth, Auth::Password { ref password, .. } if password.expose() == "typed")
+        );
     }
 
     fn password_of(config: &ConnectConfig) -> &str {
@@ -846,7 +936,10 @@ mod tests {
         // Editing an existing connection: empty password → saved one.
         let mut edit = pg("db", "", true);
         edit.id = Some(c.id);
-        assert_eq!(password_of(&repo.resolve_input(edit.clone()).unwrap()), "s3cret");
+        assert_eq!(
+            password_of(&repo.resolve_input(edit.clone()).unwrap()),
+            "s3cret"
+        );
 
         // A typed password wins.
         let mut typed = pg("db", "typed", true);
@@ -869,7 +962,13 @@ mod tests {
         i.auth = Auth::PasswordPrompt { user: "bob".into() };
         let config = f.repo().resolve_input(i).unwrap();
         assert!(matches!(config.auth, Auth::PasswordPrompt { ref user } if user == "bob"));
-        assert!(matches!(config.target, Target::Host { port: Some(5432), .. }));
+        assert!(matches!(
+            config.target,
+            Target::Host {
+                port: Some(5432),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -893,7 +992,12 @@ mod tests {
         repo.touch(b.id).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         repo.touch(a.id).unwrap();
-        let recent: Vec<_> = repo.recent(10).unwrap().into_iter().map(|c| c.name).collect();
+        let recent: Vec<_> = repo
+            .recent(10)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
         assert_eq!(recent, ["a", "b"]);
         assert_eq!(repo.recent(1).unwrap().len(), 1);
 
@@ -913,11 +1017,10 @@ mod tests {
         ));
 
         repo.delete(a.id).unwrap();
-        let rows: i64 = f
-            .db
-            .lock()
-            .query_row("SELECT COUNT(*) FROM connection_status", [], |r| r.get(0))
-            .unwrap();
+        let rows: i64 =
+            f.db.lock()
+                .query_row("SELECT COUNT(*) FROM connection_status", [], |r| r.get(0))
+                .unwrap();
         assert_eq!(rows, 0);
     }
 }

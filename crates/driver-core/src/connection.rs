@@ -6,8 +6,10 @@ use crate::{
     capabilities::Capabilities,
     dbresults::DbResult,
     dialect::Dialect,
+    error::{DbError, ErrorKind},
     introspec::{IntrospectScope, SchemaSnapshot},
     notice::Notice,
+    notify::Notification,
     types::ColumnMeta,
     value::Value,
 };
@@ -30,6 +32,37 @@ pub trait Connection: Send + Sync {
     fn take_notices(&self) -> Vec<Notice> {
         Vec::new()
     }
+
+    /// Notifications this connection receives (after `listen`). Each call
+    /// gives a new receiver; a slow one misses the oldest (`RecvError::Lagged`).
+    /// None when the driver has no notifications (`Capabilities::listen_notify`).
+    fn subscribe_notifications(&self) -> Option<tokio::sync::broadcast::Receiver<Notification>> {
+        None
+    }
+
+    /// Starts receiving notifications on `channel` (a name, quoted by the driver).
+    async fn listen(&self, channel: &str) -> DbResult<()> {
+        let _ = channel;
+        Err(no_notifications())
+    }
+
+    async fn unlisten(&self, channel: &str) -> DbResult<()> {
+        let _ = channel;
+        Err(no_notifications())
+    }
+
+    /// Sends a notification to everyone listening on `channel`.
+    async fn notify(&self, channel: &str, payload: &str) -> DbResult<()> {
+        let _ = (channel, payload);
+        Err(no_notifications())
+    }
+}
+
+fn no_notifications() -> DbError {
+    DbError::new(
+        ErrorKind::Unsupported,
+        "this database has no LISTEN / NOTIFY",
+    )
 }
 
 pub enum ExecOutcome {

@@ -20,6 +20,7 @@ import type { AuthKind, DriverInfo } from "@/lib/ipc";
 
 import type { ConnectionFormApi } from "../hooks/use-connection-form";
 import { AUTH_LABELS, authKinds, needsUser } from "../model/form-state";
+import { FilePathInput, PEM_FILTERS } from "./file-path-input";
 
 /** Who you connect as and how you prove it. */
 export function AuthFields({ api, driver }: { api: ConnectionFormApi; driver: DriverInfo }) {
@@ -90,6 +91,36 @@ export function AuthFields({ api, driver }: { api: ConnectionFormApi; driver: Dr
             <FieldLabel htmlFor={`${id}-save`} className="font-normal">
               Save password in the system keychain
             </FieldLabel>
+          </Field>
+        </div>
+      )}
+
+      {form.authKind === "clientCert" && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field data-invalid={!!errors.certPath}>
+            <FieldLabel htmlFor={`${id}-cert`}>Client certificate</FieldLabel>
+            <FilePathInput
+              id={`${id}-cert`}
+              value={form.certPath}
+              onChange={(v) => set("certPath", v)}
+              placeholder="client.crt"
+              filters={PEM_FILTERS}
+              invalid={!!errors.certPath}
+            />
+            <FieldError>{errors.certPath}</FieldError>
+          </Field>
+          <Field data-invalid={!!errors.keyPath}>
+            <FieldLabel htmlFor={`${id}-key`}>Client key</FieldLabel>
+            <FilePathInput
+              id={`${id}-key`}
+              value={form.keyPath}
+              onChange={(v) => set("keyPath", v)}
+              placeholder="client.key"
+              filters={PEM_FILTERS}
+              invalid={!!errors.keyPath}
+            />
+            <FieldDescription>Unencrypted PEM (PKCS#8, PKCS#1 or SEC1). Needs SSL.</FieldDescription>
+            <FieldError>{errors.keyPath}</FieldError>
           </Field>
         </div>
       )}

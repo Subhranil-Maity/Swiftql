@@ -2,17 +2,27 @@
 
 use std::{
     collections::HashMap,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU32},
+    },
 };
 
 use driver_core::{
     capabilities::Capabilities,
+    connect::ConnectConfig,
     connection::{Connection, ServerVersion, TxStatus},
+    driver::Driver,
 };
 use serde::Serialize;
 use specta::Type;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+
+use crate::results::ResultStore;
+
+/// `Session::applied_timeout` before any `SET statement_timeout`.
+pub const TIMEOUT_UNKNOWN: u32 = u32::MAX;
 
 pub struct Session {
     pub id: Uuid,
@@ -23,6 +33,22 @@ pub struct Session {
     pub run_lock: Mutex<()>,
     /// Set by `cancel_run`; the running script stops before its next statement.
     pub cancelled: AtomicBool,
+    /// True while a statement runs or its rows are read. `cancel_run` holds
+    /// this lock while it sends the cancel, so a cancel is only sent while
+    /// a statement is in flight.
+    pub in_flight: Mutex<bool>,
+    /// Results the grid pages through.
+    pub results: ResultStore,
+    /// The `statement_timeout` (seconds) last set on the server.
+    pub applied_timeout: AtomicU32,
+    /// How this session was opened, to open helper connections (LISTEN) to
+    /// the same server. None in tests.
+    pub origin: Option<Origin>,
+}
+
+pub struct Origin {
+    pub driver: Arc<dyn Driver>,
+    pub config: ConnectConfig,
 }
 
 impl Session {
@@ -34,7 +60,16 @@ impl Session {
             conn,
             run_lock: Mutex::new(()),
             cancelled: AtomicBool::new(false),
+            in_flight: Mutex::new(false),
+            results: ResultStore::default(),
+            applied_timeout: AtomicU32::new(TIMEOUT_UNKNOWN),
+            origin: None,
         }
+    }
+
+    pub fn with_origin(mut self, driver: Arc<dyn Driver>, config: ConnectConfig) -> Self {
+        self.origin = Some(Origin { driver, config });
+        self
     }
 
     pub fn info(&self) -> SessionInfo {
@@ -84,7 +119,7 @@ impl SessionManager {
     }
 
     /// Removes the session and closes its connection. Returns false if the
-    /// id is unknown.
+    /// id is unknown. Its held results go with it.
     pub async fn close(&self, id: Uuid) -> bool {
         let Some(session) = self.sessions.write().await.remove(&id) else {
             return false;

@@ -12,6 +12,7 @@ import { defaultPort } from "@/lib/connection-format";
 import type { DriverInfo, TargetKind } from "@/lib/ipc";
 
 import type { ConnectionFormApi } from "../hooks/use-connection-form";
+import { FilePathInput } from "./file-path-input";
 import { TARGET_LABELS, targetKinds } from "../model/form-state";
 
 /** Where the database is: host/port/database, a URL, a socket or a file. */
@@ -117,16 +118,13 @@ export function TargetFields({ api, driver }: { api: ConnectionFormApi; driver: 
       )}
 
       {form.method === "file" && (
-        // TODO: use a native file picker once the dialog plugin is added
         <Field data-invalid={!!errors.filePath}>
           <FieldLabel htmlFor={`${id}-file`}>Database file</FieldLabel>
-          <Input
+          <FilePathInput
             id={`${id}-file`}
             value={form.filePath}
-            onChange={(e) => set("filePath", e.currentTarget.value)}
-            aria-invalid={!!errors.filePath}
-            spellCheck={false}
-            className="font-mono"
+            onChange={(v) => set("filePath", v)}
+            invalid={!!errors.filePath}
           />
           <FieldError>{errors.filePath}</FieldError>
         </Field>

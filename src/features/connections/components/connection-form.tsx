@@ -14,6 +14,9 @@ import { ConnectionFormFooter, type SubmitAction } from "./connection-form-foote
 import { ConnectionPreview } from "./connection-preview";
 import { ExtraOptionField } from "./extra-option-field";
 import { GeneralFields } from "./general-fields";
+import { HostKeyDialog } from "./host-key-dialog";
+import { PasswordPromptDialog } from "./password-prompt-dialog";
+import { SshFields } from "./ssh-fields";
 import { TargetFields } from "./target-fields";
 import { ConnectionErrorAlert } from "./test-connection-result";
 import { TlsFields } from "./tls-fields";
@@ -38,7 +41,8 @@ export function ConnectionForm({
 }) {
   const formApi = useConnectionForm(initial, driver);
   const { form, check, setOption } = formApi;
-  const { state: test, test: runTest } = useTestConnection(form);
+  const testing = useTestConnection(form);
+  const { state: test, test: runTest } = testing;
   const save = useConnectionsStore((s) => s.save);
   const [submitting, setSubmitting] = useState<SubmitAction | null>(null);
   const [saveError, setSaveError] = useState<IpcError | null>(null);
@@ -54,7 +58,7 @@ export function ConnectionForm({
 
   const onTest = () => {
     if (!check("test")) return focusFirstError();
-    void runTest(toInput(form));
+    runTest(toInput(form, "test"));
   };
 
   const onSubmit = async (action: SubmitAction) => {
@@ -62,7 +66,7 @@ export function ConnectionForm({
     setSubmitting(action);
     setSaveError(null);
     try {
-      const saved = await save(toInput(form));
+      const saved = await save(toInput(form, "save"));
       if (action === "save") toast.success("Connection saved");
       onSaved(saved, action);
     } catch (error) {
@@ -80,6 +84,7 @@ export function ConnectionForm({
   }, [error]);
 
   const body = (
+    <>
     <form
       id={formId}
       ref={formRef}
@@ -94,7 +99,8 @@ export function ConnectionForm({
       <Separator />
       <TargetFields api={formApi} driver={driver} />
       <AuthFields api={formApi} driver={driver} />
-      <TlsFields />
+      <TlsFields api={formApi} driver={driver} />
+      <SshFields api={formApi} driver={driver} />
       {driver.extraOptions.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2">
           {driver.extraOptions.map((spec) => (
@@ -114,6 +120,16 @@ export function ConnectionForm({
         </div>
       )}
     </form>
+    <PasswordPromptDialog
+      key={testing.prompt?.secret ?? "none"}
+      prompt={testing.prompt}
+      title="Test connection"
+      action="Test"
+      onSubmit={testing.submitSecret}
+      onCancel={testing.cancelPrompt}
+    />
+    <HostKeyDialog prompt={testing.hostKey} onTrust={testing.trustHost} onCancel={testing.cancelPrompt} />
+    </>
   );
 
   const footer = (

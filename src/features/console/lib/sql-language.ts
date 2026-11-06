@@ -12,12 +12,15 @@ const DIALECTS: Record<string, SQLDialect> = {
  * SQL highlighting and completion in the driver's dialect: keywords, plus the
  * connected database's schemas, tables and columns once `catalog` has loaded.
  */
-export function sqlLanguage(driverId: string, catalog: Catalog | undefined): Extension {
+export function sqlLanguage(
+  driverId: string,
+  catalog: Catalog | undefined,
+  upperCaseKeywords = true,
+): Extension {
   const support = sql({
     dialect: DIALECTS[driverId] ?? StandardSQL,
-    // Keyword completions in upper case (SELECT, FROM, ...).
-    // TODO: make keyword case a user setting once the editor has settings
-    upperCaseKeywords: true,
+    // Keyword completions in upper (SELECT) or lower (select) case; Settings → Editor.
+    upperCaseKeywords,
     schema: catalog ? catalogNamespace(catalog) : undefined,
     defaultSchema: catalog ? defaultSchema(catalog) : undefined,
   });

@@ -44,8 +44,9 @@ fn kind_for_sqlstate(code: &str, message: &str) -> ErrorKind {
         "42501" => ErrorKind::Permission, // insufficient_privilege
         // undefined table / column / function / object, schema, database
         "42P01" | "42703" | "42883" | "42704" | "3F000" | "3D000" => ErrorKind::NotFound,
-        // statement_timeout and a user cancel share 57014. TODO: the message is
-        // localized (lc_messages); track timeouts on our side instead.
+        // statement_timeout and a user cancel share 57014. The English message is
+        // only a first guess: the app knows whether it sent a cancel and
+        // decides from that (src-tauri/src/query.rs, classify_cancel).
         "57014" if message.contains("statement timeout") => ErrorKind::Timeout,
         "57014" => ErrorKind::Cancelled,
         // lock_timeout, idle_in_transaction_session_timeout

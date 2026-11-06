@@ -4,9 +4,14 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "scope", rename_all = "camelCase")]
 pub enum IntrospectScope {
-    Schemas,                                        // "What schemas exist?"
-    Tables { schema: String },                      // "What tables are in this schema?"
-    TableDetails { schema: String, table: String }, // "Tell me everything about this table"
+    Schemas, // "What schemas exist?"
+    Tables {
+        schema: String,
+    }, // "What tables are in this schema?"
+    TableDetails {
+        schema: String,
+        table: String,
+    }, // "Tell me everything about this table"
     Catalog, // every user schema with its tables and columns, in one go (autocomplete)
     /// Like Catalog, plus keys, indexes, comments and sizes (the Tables and Graph views).
     Model,

@@ -4,6 +4,7 @@
 import { create } from "zustand";
 
 import type { XY } from "@/features/graph/model/layout";
+import { createDebouncedSave } from "@/lib/debounced-save";
 import { api } from "@/lib/ipc";
 import { errorMessage } from "@/lib/ipc-error";
 
@@ -16,7 +17,6 @@ export type GraphLayout = {
 
 const storageKey = (connectionId: string) => `graph.layout.${connectionId}`;
 const SAVE_DELAY_MS = 500;
-const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
 const EMPTY: GraphLayout = { positions: {}, schemas: null };
 
 function parseLayout(value: unknown): GraphLayout {
@@ -47,21 +47,11 @@ interface GraphLayoutState {
 export const useGraphLayoutStore = create<GraphLayoutState>()((set, get) => {
   const loading = new Set<string>();
 
-  const scheduleSave = (connectionId: string) => {
-    clearTimeout(pendingSaves.get(connectionId));
-    pendingSaves.set(
-      connectionId,
-      setTimeout(() => {
-        pendingSaves.delete(connectionId);
-        const layout = get().byConnection[connectionId];
-        if (!layout) return;
-        // TODO: surface save failures in the UI instead of only logging them
-        api.setAppState(storageKey(connectionId), layout).catch((error: unknown) => {
-          console.warn(`saving the graph layout for ${connectionId} failed:`, errorMessage(error));
-        });
-      }, SAVE_DELAY_MS),
-    );
-  };
+  // Failures show a toast with Retry; pending saves are flushed when the window closes.
+  const { schedule: scheduleSave } = createDebouncedSave("the graph layout", SAVE_DELAY_MS, (connectionId) => {
+    const layout = get().byConnection[connectionId];
+    return layout ? api.setAppState(storageKey(connectionId), layout) : null;
+  });
 
   const update = (connectionId: string, change: (layout: GraphLayout) => GraphLayout) => {
     const current = get().byConnection[connectionId] ?? EMPTY;
