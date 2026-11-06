@@ -7,6 +7,6 @@ pub mod driver;
 pub mod error;
 pub mod introspec;
 pub mod notice;
-pub mod session;
+pub mod notify;
 pub mod types;
 pub mod value;

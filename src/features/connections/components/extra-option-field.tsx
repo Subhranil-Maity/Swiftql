@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/select";
 import type { FieldSpec } from "@/lib/ipc";
 
+import { FilePathInput } from "./file-path-input";
+
 /** Renders one driver-specific option (`DriverInfo.extraOptions`) by its kind. */
 export function ExtraOptionField({
   spec,
@@ -62,8 +64,14 @@ export function ExtraOptionField({
         </Field>
       );
     }
+    case "file":
+      return (
+        <Field>
+          <FieldLabel htmlFor={id}>{label}</FieldLabel>
+          <FilePathInput id={id} value={value} onChange={onChange} placeholder={spec.default ?? undefined} />
+        </Field>
+      );
     default:
-      // TODO: kind "file" should open a native file picker
       return (
         <Field>
           <FieldLabel htmlFor={id}>{label}</FieldLabel>

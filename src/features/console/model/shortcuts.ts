@@ -9,4 +9,5 @@ export const SHORTCUTS = {
   closeTab: `${MOD}W`,
   runStatement: `${MOD}Enter`,
   runScript: isMac ? "⇧⌘Enter" : "Ctrl+Shift+Enter",
+  find: `${MOD}F`,
 } as const;

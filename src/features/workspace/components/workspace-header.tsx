@@ -10,7 +10,9 @@ import type { SavedConnection, SessionInfo } from "@/lib/ipc";
 import { errorMessage } from "@/lib/ipc-error";
 import { useSessionsStore } from "@/stores/sessions";
 
-/** Top bar: what you're connected to, and Disconnect. */
+import { TransactionStatus } from "./transaction-status";
+
+/** Top bar: what you're connected to, the transaction status, and Disconnect. */
 export function WorkspaceHeader({
   session,
   connection,
@@ -41,10 +43,12 @@ export function WorkspaceHeader({
         <span className="font-mono text-xs text-muted-foreground">
           {session.serverVersion.product} {formatVersion(session.serverVersion)}
         </span>
+        <div className="ml-auto flex items-center gap-3">
+          <TransactionStatus session={session} />
+        </div>
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto"
           onClick={() => void onDisconnect()}
           disabled={leaving}
         >

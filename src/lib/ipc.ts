@@ -3,6 +3,9 @@
 // `IpcError`, so callers use plain try/catch.
 import * as bindings from "@/bindings";
 import { commands } from "@/bindings";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+
 import { IpcError } from "@/lib/ipc-error";
 
 type Result<T, E> = { status: "ok"; data: T } | { status: "error"; error: E };
@@ -54,6 +57,14 @@ export type DbValue = bindings.DbValue_Serialize;
 export type SchemaSnapshot = bindings.SchemaSnapshot_Serialize;
 export type Schema = bindings.Schema_Serialize;
 export type Table = bindings.Table_Serialize;
+export type Column = bindings.Column_Serialize;
+export type SshConfigHost = bindings.SshConfigHost_Serialize;
+export type NotificationReceived = bindings.NotificationReceived_Serialize;
+export type NotificationPayload = bindings.NotificationPayload;
+export type ResultSelection = bindings.ResultSelection_Deserialize;
+export type RowPage = bindings.RowPage_Serialize;
+export type GeneralSettings = bindings.GeneralSettings_Serialize;
+export type KeyringStatus = bindings.KeyringStatus_Serialize;
 
 export type {
   Auth,
@@ -61,8 +72,19 @@ export type {
   Capabilities,
   ConfigError,
   ErrorKind,
+  ExportOutcome,
+  ResultSort,
+  ResultState,
+  BooleanDisplay,
+  Density,
+  HostKeyPolicy,
+  KeywordCase,
+  TimestampDisplay,
+  TransactionMode,
+  FkAction,
+  ForeignKey,
+  Index,
   FieldKind,
-  Column,
   HealthState,
   IntrospectScope,
   NoticeSeverity,
@@ -77,3 +99,30 @@ export type {
 
 export { IpcError } from "@/lib/ipc-error";
 export { Channel } from "@tauri-apps/api/core";
+/** The native "Open" dialog for picking a file; resolves with its path, or null. */
+export async function pickFile(filters?: { name: string; extensions: string[] }[]): Promise<string | null> {
+  const picked = await openDialog({ multiple: false, directory: false, filters });
+  return typeof picked === "string" ? picked : null;
+}
+
+export type SaveFilter = { name: string; extensions: string[] };
+
+/**
+ * Asks where to save (the backend opens the "Save as" dialog), then writes
+ * `bytes` there. Resolves with the path, or null if the dialog was cancelled.
+ * The bytes go as a raw IPC body, not a JSON number array.
+ */
+export async function saveExport(
+  defaultName: string,
+  bytes: Uint8Array,
+  filters: SaveFilter[],
+): Promise<string | null> {
+  const options = encodeURIComponent(JSON.stringify({ defaultName, filters }));
+  try {
+    return await invoke<string | null>("save_export", bytes, {
+      headers: { "x-swiftql-save": options },
+    });
+  } catch (error) {
+    throw IpcError.from(error);
+  }
+}

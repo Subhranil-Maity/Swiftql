@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/swiftql.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SwiftQL</title>
     <script>
@@ -10,8 +10,10 @@
       // white in dark mode. Same rule as applyTheme in src/stores/theme.ts,
       // which takes over once the app loads.
       try {
-        var stored = JSON.parse(localStorage.getItem("swiftql-theme") || "{}");
-        var theme = (stored.state && stored.state.theme) || "system";
+        // A plain "light" | "dark" | "system"; older builds stored zustand's
+        // persist JSON ({"state":{"theme":"dark"}}).
+        var raw = localStorage.getItem("swiftql-theme") || "system";
+        var theme = raw.charAt(0) === "{" ? (JSON.parse(raw).state || {}).theme : raw;
         var dark =
           theme === "dark" ||
           (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);

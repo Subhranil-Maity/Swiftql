@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use config_store::{ConfigError, ConfigManager, ConnectionInput, ConnectionStatus};
 use driver_core::{
-    connect::{Auth, ConnectConfig, Secret},
+    connect::{Auth, ConnectConfig, HostKeyCheck, Secret, SshAuth, Timeouts, ssh_codes},
     connection::ServerVersion,
     driver::Driver,
     error::{DbError, ErrorKind},
@@ -62,21 +62,79 @@ fn short_version(v: &ServerVersion) -> String {
     }
 }
 
+/// The app known_hosts file: SSH hosts trusted in SwiftQL.
+pub fn app_known_hosts(config: &ConfigManager) -> std::path::PathBuf {
+    config.paths().root.join("known_hosts")
+}
+
+/// Adds what the settings decide (timeouts, SSH host key checks) to a
+/// connection's config.
+pub fn with_settings(mut connect: ConnectConfig, config: &ConfigManager) -> ConnectConfig {
+    let settings = config.settings().get().connection;
+    connect.timeouts = Timeouts {
+        connect_secs: Some(settings.connect_timeout_secs),
+        keepalive_secs: Some(settings.keepalive_secs),
+    };
+    connect.host_keys = Some(HostKeyCheck {
+        policy: settings.ssh_host_key_policy,
+        user_known_hosts: ssh_tunnel::config::default_known_hosts_path(),
+        app_known_hosts: app_known_hosts(config),
+    });
+    connect
+}
+
+/// A password or SSH secret that still has to be typed: the error the UI
+/// answers with a prompt.
+fn missing_secret(connect: &ConnectConfig) -> Option<DbError> {
+    if let Auth::PasswordPrompt { .. } = connect.auth {
+        return Some(password_required());
+    }
+    if let Some(SshAuth::PasswordPrompt) = connect.tunnel.as_ref().map(|t| &t.auth) {
+        return Some(
+            DbError::new(ErrorKind::Auth, "An SSH password is required")
+                .with_code(ssh_codes::PASSWORD_REQUIRED),
+        );
+    }
+    None
+}
+
 /// Opens a connection from unsaved form input, reads the server version and
-/// closes it again.
+/// closes it again. `password` / `ssh_secret` answer a prompt for a one-off
+/// test and are never saved.
 #[tauri::command]
 #[specta::specta]
 pub async fn test_connection(
     config: State<'_, Config>,
     registry: State<'_, DriverRegistry>,
     input: ConnectionInput,
+    password: Option<String>,
+    ssh_secret: Option<String>,
 ) -> Result<ServerVersion, DbError> {
     let driver = driver(&registry, &input.driver)?;
-    let connect_config = blocking(&config, move |c| c.connections().resolve_input(input)).await?;
-    if let Auth::PasswordPrompt { .. } = connect_config.auth {
-        // TODO: let the form ask for a one-off password to test with
-        return Err(password_required()
-            .with_hint("To test, switch Authentication to Password and enter it."));
+    let mut connect_config = blocking(&config, move |c| {
+        Ok(with_settings(c.connections().resolve_input(input)?, c))
+    })
+    .await?;
+    if let (Auth::PasswordPrompt { user }, Some(p)) = (&connect_config.auth, password) {
+        connect_config.auth = Auth::Password {
+            user: user.clone(),
+            password: Secret::new(p),
+        };
+    }
+    if let (Some(tunnel), Some(secret)) = (connect_config.tunnel.as_mut(), ssh_secret) {
+        tunnel.auth = match std::mem::replace(&mut tunnel.auth, SshAuth::Agent) {
+            SshAuth::PasswordPrompt | SshAuth::Password { .. } => SshAuth::Password {
+                password: Secret::new(secret),
+            },
+            SshAuth::Key { path, .. } => SshAuth::Key {
+                path,
+                passphrase: Some(Secret::new(secret)),
+            },
+            other => other,
+        };
+    }
+    if let Some(err) = missing_secret(&connect_config) {
+        return Err(err);
     }
     let conn = driver.connect(&connect_config).await?;
     let version = conn.server_version().clone();
@@ -136,10 +194,13 @@ pub async fn check_connection(
     let (driver_id, connect_config): (String, ConnectConfig) = blocking(&config, move |c| {
         let repo = c.connections();
         let saved = repo.get(id)?;
-        Ok((saved.driver, repo.resolve(id, None)?))
+        Ok((
+            saved.driver,
+            with_settings(repo.resolve(id, None, None)?, c),
+        ))
     })
     .await?;
-    if let Auth::PasswordPrompt { .. } = connect_config.auth {
+    if missing_secret(&connect_config).is_some() {
         return Ok(ConnectionHealth {
             state: HealthState::NeedsPassword,
             message: None,
@@ -170,25 +231,31 @@ fn password_required() -> DbError {
 
 /// Opens a saved connection and keeps it as a session.
 ///
-/// `password` is used once and never saved. Without it, a connection that
-/// has no saved password fails with code `PASSWORD_REQUIRED`.
+/// `password` and `ssh_secret` (SSH password or key passphrase) are used
+/// once and never saved. Without them, a connection that has no saved one
+/// fails with code `PASSWORD_REQUIRED` / `SSH_PASSWORD_REQUIRED` (or, for an
+/// encrypted key, `SSH_PASSPHRASE_REQUIRED` from the driver). An unknown SSH
+/// host fails with `SSH_HOST_UNKNOWN` until `trust_ssh_host`.
 #[tauri::command]
 #[specta::specta]
-pub async fn connect(
+pub async fn connect<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     config: State<'_, Config>,
     registry: State<'_, DriverRegistry>,
     sessions: State<'_, SessionManager>,
     id: Uuid,
     password: Option<String>,
+    ssh_secret: Option<String>,
 ) -> Result<SessionInfo, DbError> {
     let (driver_id, connect_config): (String, ConnectConfig) = blocking(&config, move |c| {
         let repo = c.connections();
         let saved = repo.get(id)?;
-        Ok((saved.driver, repo.resolve(id, password.map(Secret::new))?))
+        let resolved = repo.resolve(id, password.map(Secret::new), ssh_secret.map(Secret::new))?;
+        Ok((saved.driver, with_settings(resolved, c)))
     })
     .await?;
-    if let Auth::PasswordPrompt { .. } = connect_config.auth {
-        return Err(password_required());
+    if let Some(err) = missing_secret(&connect_config) {
+        return Err(err);
     }
     let driver = driver(&registry, &driver_id)?;
 
@@ -201,9 +268,18 @@ pub async fn connect(
     };
     let version = short_version(conn.server_version());
     let session = sessions
-        .insert(Session::new(id, driver.id(), conn))
+        .insert(
+            Session::new(id, driver.id(), conn).with_origin(Arc::clone(&driver), connect_config),
+        )
         .await;
     record(&config, id, succeeded(version), true).await;
+    // LISTEN typed in the console delivers on the session's own connection.
+    crate::notify::forward(
+        &app,
+        session.id,
+        &*session.conn,
+        crate::notify::Source::Console,
+    );
     Ok(session.info())
 }
 
@@ -250,8 +326,10 @@ async fn record(config: &Config, id: Uuid, status: ConnectionStatus, touch: bool
 #[specta::specta]
 pub async fn disconnect(
     sessions: State<'_, SessionManager>,
+    listeners: State<'_, crate::notify::Listeners>,
     session_id: Uuid,
 ) -> Result<(), DbError> {
+    listeners.close(session_id).await;
     if sessions.close(session_id).await {
         Ok(())
     } else {
@@ -264,7 +342,9 @@ pub async fn disconnect(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn list_sessions(sessions: State<'_, SessionManager>) -> Result<Vec<SessionInfo>, DbError> {
+pub async fn list_sessions(
+    sessions: State<'_, SessionManager>,
+) -> Result<Vec<SessionInfo>, DbError> {
     Ok(sessions.list().await.iter().map(|s| s.info()).collect())
 }
 
@@ -326,6 +406,7 @@ mod tests {
         app.manage(config);
         app.manage(DriverRegistry::new());
         app.manage(SessionManager::default());
+        app.manage(crate::notify::Listeners::default());
         app
     }
 
@@ -337,48 +418,99 @@ mod tests {
         let app = app(dir.path());
 
         // Test: wrong password is an auth error, right one gives the version.
-        let err = test_connection(app.state(), app.state(), input(&pg, "wrong", false))
-            .await
-            .unwrap_err();
+        let err = test_connection(
+            app.state(),
+            app.state(),
+            input(&pg, "wrong", false),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Auth, "{err:?}");
-        let version = test_connection(app.state(), app.state(), input(&pg, &pg.password, false))
-            .await
-            .unwrap();
+        let version = test_connection(
+            app.state(),
+            app.state(),
+            input(&pg, &pg.password, false),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(version.product, "PostgreSQL");
 
         // Saved without a password: connect asks for one.
         let config = app.state::<Config>();
-        let saved = config.connections().save(input(&pg, &pg.password, false)).unwrap();
-        let err = connect(app.state(), app.state(), app.state(), saved.id, None)
-            .await
-            .unwrap_err();
+        let saved = config
+            .connections()
+            .save(input(&pg, &pg.password, false))
+            .unwrap();
+        let err = connect(
+            app.handle().clone(),
+            app.state(),
+            app.state(),
+            app.state(),
+            saved.id,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.code.as_deref(), Some(PASSWORD_REQUIRED));
 
         // A wrong typed password records a failed status.
-        let err = connect(app.state(), app.state(), app.state(), saved.id, Some("wrong".into()))
-            .await
-            .unwrap_err();
+        let err = connect(
+            app.handle().clone(),
+            app.state(),
+            app.state(),
+            app.state(),
+            saved.id,
+            Some("wrong".into()),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.kind, ErrorKind::Auth);
-        let status = config.connections().get(saved.id).unwrap().last_status.unwrap();
+        let status = config
+            .connections()
+            .get(saved.id)
+            .unwrap()
+            .last_status
+            .unwrap();
         assert!(!status.ok);
         assert_eq!(status.error_kind.as_deref(), Some("auth"));
 
         // The right one opens a session and records success.
-        let session = connect(app.state(), app.state(), app.state(), saved.id, Some(pg.password.clone()))
-            .await
-            .unwrap();
+        let session = connect(
+            app.handle().clone(),
+            app.state(),
+            app.state(),
+            app.state(),
+            saved.id,
+            Some(pg.password.clone()),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(session.connection_id, saved.id);
         assert_eq!(session.driver_id, "postgres");
         let after = config.connections().get(saved.id).unwrap();
         assert!(after.last_used_at.is_some());
         let status = after.last_status.unwrap();
         assert!(status.ok);
-        assert_eq!(status.server_version, Some(short_version(&session.server_version)));
+        assert_eq!(
+            status.server_version,
+            Some(short_version(&session.server_version))
+        );
         assert_eq!(list_sessions(app.state()).await.unwrap().len(), 1);
 
-        disconnect(app.state(), session.session_id).await.unwrap();
+        disconnect(app.state(), app.state(), session.session_id)
+            .await
+            .unwrap();
         assert!(list_sessions(app.state()).await.unwrap().is_empty());
-        let err = disconnect(app.state(), session.session_id).await.unwrap_err();
+        let err = disconnect(app.state(), app.state(), session.session_id)
+            .await
+            .unwrap_err();
         assert_eq!(err.kind, ErrorKind::NotFound);
     }
 

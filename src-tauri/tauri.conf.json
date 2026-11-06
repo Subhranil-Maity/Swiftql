@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "swiftql",
-  "version": "0.1.0",
+  "productName": "SwiftQL",
+  "version": "1.0.0",
   "identifier": "com.subhranil.swiftql",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -12,18 +12,38 @@
   "app": {
     "windows": [
       {
-        "title": "swiftql",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "SwiftQL",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 600,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob:",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'",
+        "frame-src": "'none'"
+      },
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Subhranil Maity",
+    "shortDescription": "A fast desktop SQL client",
+    "longDescription": "SwiftQL is a desktop SQL client for PostgreSQL with a SQL console, schema browser, ER graph, TLS and SSH tunnels.",
+    "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

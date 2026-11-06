@@ -67,7 +67,11 @@ impl DriverInfo {
 #[tauri::command]
 #[specta::specta]
 pub fn list_drivers(registry: State<'_, DriverRegistry>) -> Result<Vec<DriverInfo>, DbError> {
-    Ok(registry.all().iter().map(|d| DriverInfo::of(d.as_ref())).collect())
+    Ok(registry
+        .all()
+        .iter()
+        .map(|d| DriverInfo::of(d.as_ref()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -80,6 +84,10 @@ mod tests {
         let pg = registry.get("postgres").expect("postgres driver");
         let info = DriverInfo::of(pg.as_ref());
         assert_eq!(info.name, "PostgreSQL");
-        assert!(info.image.unwrap().starts_with("data:image/svg+xml;base64,"));
+        assert!(
+            info.image
+                .unwrap()
+                .starts_with("data:image/svg+xml;base64,")
+        );
     }
 }

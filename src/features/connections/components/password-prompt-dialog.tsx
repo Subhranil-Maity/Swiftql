@@ -12,31 +12,38 @@ import {
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { formatTarget } from "@/lib/connection-format";
+import { SECRET_LABELS } from "@/features/connections/model/connect-flow";
 
-import type { PasswordPrompt } from "../hooks/use-connect";
+import type { SecretPrompt } from "../hooks/use-secret-flow";
 
-/** Asks for a password once, for a connection that doesn't save it. */
+/** Asks once for a password, SSH password or key passphrase that isn't saved. */
 export function PasswordPromptDialog({
   prompt,
+  title,
+  description,
+  action = "Connect",
   onSubmit,
   onCancel,
 }: {
-  prompt: PasswordPrompt | null;
-  onSubmit: (password: string) => void;
+  prompt: SecretPrompt | null;
+  /** e.g. "Connect to Production". */
+  title: string;
+  /** e.g. "alice@db.example.com:5432". */
+  description?: string;
+  action?: string;
+  onSubmit: (value: string) => void;
   onCancel: () => void;
 }) {
   const id = useId();
-  const [password, setPassword] = useState("");
-  const connection = prompt?.connection;
-  const user = connection && "user" in connection.auth ? connection.auth.user : null;
+  const [value, setValue] = useState("");
+  const labels = prompt ? SECRET_LABELS[prompt.secret] : SECRET_LABELS.password;
 
   return (
     <Dialog
       open={prompt !== null}
       onOpenChange={(open) => {
         if (!open) {
-          setPassword("");
+          setValue("");
           onCancel();
         }
       }}
@@ -46,27 +53,26 @@ export function PasswordPromptDialog({
           className="flex flex-col gap-4"
           onSubmit={(e) => {
             e.preventDefault();
-            onSubmit(password);
+            onSubmit(value);
+            setValue("");
           }}
         >
           <DialogHeader>
-            <DialogTitle className="text-[15px]">Connect to {connection?.name}</DialogTitle>
-            {connection && (
-              <DialogDescription className="font-mono text-xs">
-                {user ? `${user}@` : ""}
-                {formatTarget(connection.target, connection.driver)}
-              </DialogDescription>
-            )}
+            <DialogTitle className="text-[15px]">{title}</DialogTitle>
+            <DialogDescription className="text-xs">
+              {labels.title}
+              {description && <span className="ml-1 font-mono">· {description}</span>}
+            </DialogDescription>
           </DialogHeader>
           <Field data-invalid={!!prompt?.error}>
-            <FieldLabel htmlFor={`${id}-pw`}>Password</FieldLabel>
+            <FieldLabel htmlFor={`${id}-secret`}>{labels.label}</FieldLabel>
             <Input
-              id={`${id}-pw`}
+              id={`${id}-secret`}
               type="password"
-              value={password}
-              onChange={(e) => setPassword(e.currentTarget.value)}
+              value={value}
+              onChange={(e) => setValue(e.currentTarget.value)}
               aria-invalid={!!prompt?.error}
-              autoComplete="current-password"
+              autoComplete={labels.autoComplete}
               autoFocus
             />
             <FieldError>{prompt?.error}</FieldError>
@@ -77,7 +83,7 @@ export function PasswordPromptDialog({
             </Button>
             <Button type="submit" disabled={prompt?.submitting}>
               {prompt?.submitting && <Spinner data-icon="inline-start" />}
-              Connect
+              {action}
             </Button>
           </DialogFooter>
         </form>

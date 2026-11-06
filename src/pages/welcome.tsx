@@ -18,12 +18,19 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ConnectionList } from "@/features/connections/components/connection-list";
 import { DeleteConnectionDialog } from "@/features/connections/components/delete-connection-dialog";
+import { HostKeyDialog } from "@/features/connections/components/host-key-dialog";
 import { PasswordPromptDialog } from "@/features/connections/components/password-prompt-dialog";
 import { useConnect } from "@/features/connections/hooks/use-connect";
 import { formatTarget } from "@/lib/connection-format";
 import type { SavedConnection } from "@/lib/ipc";
 import { useConnectionsStore } from "@/stores/connections";
 import { useNavigationStore } from "@/stores/navigation";
+
+/** "alice@db.example.com:5432" for the prompt. */
+function connectionLabel(c: SavedConnection): string {
+  const user = "user" in c.auth ? `${c.auth.user}@` : "";
+  return `${user}${formatTarget(c.target, c.driver)}`;
+}
 
 /** Connects once to the connection a "Save and connect" sent us here with. */
 function useConnectOnArrival(connect: (c: SavedConnection) => Promise<void>) {
@@ -46,7 +53,8 @@ function useConnectOnArrival(connect: (c: SavedConnection) => Promise<void>) {
 export function WelcomePage() {
   const { connections, loaded, error } = useConnectionsStore();
   const go = useNavigationStore((s) => s.go);
-  const { connect, connectingId, prompt, submitPassword, cancelPrompt } = useConnect();
+  const { connect, connectingId, connection, prompt, hostKey, submitPassword, trustHost, cancelPrompt } =
+    useConnect();
   const [query, setQuery] = useState("");
   const [deleting, setDeleting] = useState<SavedConnection | null>(null);
   const listLabel = useId();
@@ -142,11 +150,14 @@ export function WelcomePage() {
 
       <DeleteConnectionDialog connection={deleting} onClose={() => setDeleting(null)} />
       <PasswordPromptDialog
-        key={prompt?.connection.id ?? "none"}
+        key={`${connection?.id ?? "none"}-${prompt?.secret}`}
         prompt={prompt}
-        onSubmit={(pw) => void submitPassword(pw)}
+        title={`Connect to ${connection?.name ?? ""}`}
+        description={connection ? connectionLabel(connection) : undefined}
+        onSubmit={submitPassword}
         onCancel={cancelPrompt}
       />
+      <HostKeyDialog prompt={hostKey} onTrust={trustHost} onCancel={cancelPrompt} />
     </PageShell>
   );
 }

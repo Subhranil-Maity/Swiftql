@@ -1,11 +1,11 @@
 [package]
 name = "config-store"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
-driver-core = { version = "0.1.0", path = "../driver-core" }
+driver-core = { version = "1.0.0", path = "../driver-core" }
 keyring = "4.2.0"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

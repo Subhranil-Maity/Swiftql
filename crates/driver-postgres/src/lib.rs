@@ -7,9 +7,11 @@ mod dialect;
 mod driver;
 mod error;
 mod introspect;
+mod pgpass;
 mod sql;
 mod stream;
 mod tls;
+mod tunnel;
 mod tx;
 mod types;
 

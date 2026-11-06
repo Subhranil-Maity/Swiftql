@@ -31,9 +31,9 @@ pub fn static_capabilities() -> Capabilities {
         cancel_query: true,
         multiple_result_sets: false, // TODO: execute returns a single ExecOutcome (see TODO.md, driver-core)
         server_notices: true,
-        listen_notify: false,        // TODO: no LISTEN/NOTIFY API in driver-core yet
-        parameters: false,           // TODO: no execute_params on Connection yet
-        streaming_cursor: false, // TODO: rows are streamed without cursor paging (see stream.rs)
+        listen_notify: true,
+        parameters: false,       // TODO: no execute_params on Connection yet
+        streaming_cursor: false, // rows are read into the app's capped result buffer (src-tauri/src/results)
 
         // Analysis
         explain: ExplainSupport::JsonWithAnalyze,
@@ -55,7 +55,7 @@ pub fn static_capabilities() -> Capabilities {
 
         // Connection
         tls: true,
-        ssh_tunnel: false, // TODO: tunnel not implemented in this driver yet
+        ssh_tunnel: true,
         connection_string: true,
     }
 }

@@ -2,10 +2,12 @@ import { create } from "zustand";
 
 import {
   type ConsoleTabSet,
+  type TabInit,
   createTab,
   emptyTabSet,
   parseTabSet,
 } from "@/features/console/model/tab";
+import { createDebouncedSave } from "@/lib/debounced-save";
 import { api } from "@/lib/ipc";
 import { errorMessage } from "@/lib/ipc-error";
 
@@ -13,13 +15,13 @@ import { errorMessage } from "@/lib/ipc-error";
 const storageKey = (connectionId: string) => `console.tabs.${connectionId}`;
 
 const SAVE_DELAY_MS = 500;
-const pendingSaves = new Map<string, ReturnType<typeof setTimeout>>();
 
 interface ConsoleTabsState {
   byConnection: Record<string, ConsoleTabSet>;
   /** Reads the saved tabs once per connection; later calls do nothing. */
   load: (connectionId: string) => Promise<void>;
-  openTab: (connectionId: string) => void;
+  /** Opens and activates a tab; returns its id, or null while the tabs are still loading. */
+  openTab: (connectionId: string, init?: TabInit) => string | null;
   /** Activates the neighbour; closing the last tab leaves a fresh one. */
   closeTab: (connectionId: string, tabId: string) => void;
   selectTab: (connectionId: string, tabId: string) => void;
@@ -39,22 +41,11 @@ export const useConsoleTabsStore = create<ConsoleTabsState>()((set, get) => {
     scheduleSave(connectionId);
   };
 
-  const scheduleSave = (connectionId: string) => {
-    clearTimeout(pendingSaves.get(connectionId));
-    pendingSaves.set(
-      connectionId,
-      setTimeout(() => {
-        pendingSaves.delete(connectionId);
-        const tabs = get().byConnection[connectionId];
-        if (!tabs) return;
-        // TODO: surface save failures in the UI instead of only logging them
-        api.setAppState(storageKey(connectionId), tabs).catch((error: unknown) => {
-          console.warn(`saving console tabs for ${connectionId} failed:`, errorMessage(error));
-        });
-      }, SAVE_DELAY_MS),
-    );
-    // TODO: flush pending saves when the window closes; the last ~500ms of typing is lost on quit
-  };
+  // Failures show a toast with Retry; pending saves are flushed when the window closes.
+  const { schedule: scheduleSave } = createDebouncedSave("console tabs", SAVE_DELAY_MS, (connectionId) => {
+    const tabs = get().byConnection[connectionId];
+    return tabs ? api.setAppState(storageKey(connectionId), tabs) : null;
+  });
 
   return {
     byConnection: {},
@@ -75,11 +66,16 @@ export const useConsoleTabsStore = create<ConsoleTabsState>()((set, get) => {
       }));
     },
 
-    openTab: (connectionId) =>
+    openTab: (connectionId, init) => {
+      if (!get().byConnection[connectionId]) return null;
+      let id: string | null = null;
       update(connectionId, (t) => {
-        const tab = createTab(t.counter + 1);
+        const tab = createTab(t.counter + 1, init);
+        id = tab.id;
         return { tabs: [...t.tabs, tab], activeId: tab.id, counter: t.counter + 1 };
-      }),
+      });
+      return id;
+    },
 
     closeTab: (connectionId, tabId) =>
       update(connectionId, (t) => {

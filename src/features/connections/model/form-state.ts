@@ -8,8 +8,12 @@ import type {
   TargetInput,
   TargetKind,
 } from "@/lib/ipc";
+import { useSettingsStore } from "@/stores/settings";
 
 import { type ConnectionColor, DEFAULT_COLOR, isConnectionColor } from "./colors";
+
+export type SshSourceKind = "manual" | "config";
+export type SshAuthKind = "password" | "key" | "agent" | "auto";
 
 export interface FormState {
   /** Set when editing a saved connection. */
@@ -32,10 +36,29 @@ export interface FormState {
   savePassword: boolean;
   /** The keyring already has a password; an empty field keeps it. */
   passwordSaved: boolean;
+  /** Client certificate auth: PEM files. */
+  certPath: string;
+  keyPath: string;
 
-  // TODO: re-enable SSL modes once driver-postgres supports TLS (tls.rs)
-  /** Always "disable" for now; see toInput. */
   sslMode: SslMode;
+  /** Root CA file (PEM) for verify-ca / verify-full; empty = system roots. */
+  caCert: string;
+
+  sshEnabled: boolean;
+  sshSource: SshSourceKind;
+  /** Host alias from ~/.ssh/config. */
+  sshAlias: string;
+  sshHost: string;
+  sshPort: string;
+  sshUser: string;
+  sshAuth: SshAuthKind;
+  sshPassword: string;
+  sshKeyPath: string;
+  sshPassphrase: string;
+  /** Save the SSH password / passphrase in the keyring. */
+  sshSaveSecret: boolean;
+  /** The keyring already has one; an empty field keeps it. */
+  sshSecretSaved: boolean;
 
   options: Record<string, string>;
 }
@@ -44,8 +67,8 @@ export type FormField = keyof FormState;
 export type FormErrors = Partial<Record<FormField, string>>;
 
 /** Auth kinds the form can render; others are hidden until it can. */
-// TODO: clientCert (cert/key file pickers) and token (cloud IAM) need their own fields.
-export const FORM_AUTH_KINDS: AuthKind[] = ["password", "passwordPrompt", "pgPass", "none"];
+// TODO: token (cloud IAM) needs provider fields.
+export const FORM_AUTH_KINDS: AuthKind[] = ["password", "passwordPrompt", "pgPass", "clientCert", "none"];
 
 export const AUTH_LABELS: Record<AuthKind, string> = {
   password: "Password",
@@ -71,6 +94,21 @@ export const SSL_LABELS: Record<SslMode, string> = {
   verifyFull: "Verify full",
 };
 
+export const SSL_DESCRIPTIONS: Record<SslMode, string> = {
+  disable: "No encryption.",
+  prefer: "Encrypt when the server supports it; the certificate isn't checked.",
+  require: "Always encrypt; the certificate isn't checked unless a CA file is set.",
+  verifyCa: "Encrypt and check the certificate is signed by a trusted CA.",
+  verifyFull: "Encrypt, check the CA and that the certificate matches the host name.",
+};
+
+export const SSH_AUTH_LABELS: Record<SshAuthKind, string> = {
+  auto: "Keys from ~/.ssh, then agent",
+  key: "Private key file",
+  password: "Password",
+  agent: "SSH agent",
+};
+
 const TARGET_ORDER: TargetKind[] = ["host", "url", "socket", "file"];
 
 export function targetKinds(driver: DriverInfo): TargetKind[] {
@@ -90,6 +128,7 @@ export function emptyForm(driver: DriverInfo): FormState {
   for (const spec of driver.extraOptions) {
     if (spec.default != null) options[spec.key] = spec.default;
   }
+  const defaults = useSettingsStore.getState().settings?.connection;
   return {
     id: null,
     driver: driver.id,
@@ -106,9 +145,24 @@ export function emptyForm(driver: DriverInfo): FormState {
     authKind: authKinds(driver)[0] ?? "none",
     user: "",
     password: "",
-    savePassword: true,
+    savePassword: defaults?.savePasswordsByDefault ?? true,
     passwordSaved: false,
-    sslMode: "disable",
+    certPath: "",
+    keyPath: "",
+    sslMode: driver.capabilities.tls ? (defaults?.defaultSslMode ?? "prefer") : "disable",
+    caCert: "",
+    sshEnabled: false,
+    sshSource: "manual",
+    sshAlias: "",
+    sshHost: "",
+    sshPort: "",
+    sshUser: "",
+    sshAuth: "auto",
+    sshPassword: "",
+    sshKeyPath: "",
+    sshPassphrase: "",
+    sshSaveSecret: defaults?.savePasswordsByDefault ?? true,
+    sshSecretSaved: false,
     options,
   };
 }
@@ -117,6 +171,8 @@ export function fromSaved(saved: SavedConnection, driver: DriverInfo): FormState
   const form = emptyForm(driver);
   const t = saved.target;
   const auth = saved.auth;
+  const tunnel = saved.tunnel;
+  const sshAuth = tunnel?.auth;
   return {
     ...form,
     id: saved.id,
@@ -132,10 +188,30 @@ export function fromSaved(saved: SavedConnection, driver: DriverInfo): FormState
     authKind: auth.kind,
     user: "user" in auth ? auth.user : "",
     password: "",
-    savePassword: auth.kind === "password" ? auth.saved : true,
+    savePassword: auth.kind === "password" ? auth.saved : form.savePassword,
     passwordSaved: auth.kind === "password" && auth.saved,
-    // TODO: read saved.tls back once SSL modes are re-enabled.
-    sslMode: "disable",
+    certPath: auth.kind === "clientCert" ? auth.cert : "",
+    keyPath: auth.kind === "clientCert" ? auth.key : "",
+    sslMode: saved.tls.mode,
+    caCert: saved.tls.caCert ?? "",
+    sshEnabled: tunnel != null,
+    sshSource: tunnel?.source?.kind === "config" ? "config" : "manual",
+    sshAlias: tunnel?.source?.kind === "config" ? tunnel.source.alias : "",
+    sshHost: tunnel?.host ?? "",
+    sshPort: tunnel?.port != null ? String(tunnel.port) : "",
+    sshUser: tunnel?.user ?? "",
+    sshAuth: sshAuth ? (sshAuth.kind as SshAuthKind) : "auto",
+    sshPassword: "",
+    sshKeyPath: sshAuth?.kind === "key" ? sshAuth.path : "",
+    sshPassphrase: "",
+    sshSaveSecret:
+      sshAuth?.kind === "password"
+        ? sshAuth.saved
+        : sshAuth?.kind === "key"
+          ? sshAuth.passphraseSaved
+          : form.sshSaveSecret,
+    sshSecretSaved:
+      (sshAuth?.kind === "password" && sshAuth.saved) || (sshAuth?.kind === "key" && sshAuth.passphraseSaved),
     options: { ...form.options, ...saved.options },
   };
 }
@@ -145,17 +221,20 @@ function blankToNull(value: string): string | null {
   return v === "" ? null : v;
 }
 
+function portOrNull(value: string): number | null {
+  const port = Number.parseInt(value, 10);
+  return Number.isNaN(port) ? null : port;
+}
+
 export function toTarget(form: FormState): TargetInput {
   switch (form.method) {
-    case "host": {
-      const port = Number.parseInt(form.port, 10);
+    case "host":
       return {
         method: "host",
         host: form.host.trim(),
-        port: Number.isNaN(port) ? null : port,
+        port: portOrNull(form.port),
         database: blankToNull(form.database),
       };
-    }
     case "url":
       return { method: "url", url: form.url.trim() };
     case "socket":
@@ -165,34 +244,76 @@ export function toTarget(form: FormState): TargetInput {
   }
 }
 
-function toAuth(form: FormState): ConnectionInput["auth"] {
+/**
+ * For saving, a password that isn't kept becomes "ask every time", so the
+ * single save flag the backend has only applies to secrets the user wants
+ * kept. For testing, the typed values are sent as they are.
+ */
+function toAuth(form: FormState, purpose: "test" | "save"): ConnectionInput["auth"] {
   const user = form.user.trim();
   switch (form.authKind) {
     case "password":
+      if (purpose === "save" && !form.savePassword) return { kind: "passwordPrompt", user };
       return { kind: "password", user, password: form.password };
     case "passwordPrompt":
       return { kind: "passwordPrompt", user };
     case "pgPass":
       return { kind: "pgPass", user };
+    case "clientCert":
+      return { kind: "clientCert", user, cert: form.certPath.trim(), key: form.keyPath.trim() };
     default:
       return { kind: "none" };
   }
 }
 
-export function toInput(form: FormState): ConnectionInput {
+function toTunnel(form: FormState, purpose: "test" | "save"): ConnectionInput["tunnel"] {
+  if (!form.sshEnabled) return null;
+  const keep = purpose === "test" || form.sshSaveSecret;
+  let auth: NonNullable<ConnectionInput["tunnel"]>["auth"];
+  switch (form.sshAuth) {
+    case "password":
+      auth = keep ? { kind: "password", password: form.sshPassword } : { kind: "passwordPrompt" };
+      break;
+    case "key":
+      auth = {
+        kind: "key",
+        path: form.sshKeyPath.trim(),
+        // Empty with a saved one: the backend keeps it.
+        passphrase: keep && (form.sshPassphrase || form.sshSecretSaved) ? form.sshPassphrase : null,
+      };
+      break;
+    case "agent":
+      auth = { kind: "agent" };
+      break;
+    case "auto":
+      auth = { kind: "auto" };
+      break;
+  }
+  const fromConfig = form.sshSource === "config";
+  return {
+    source: fromConfig ? { kind: "config", alias: form.sshAlias.trim() } : { kind: "manual" },
+    // With a config alias, empty fields take the config's values.
+    host: form.sshHost.trim(),
+    port: portOrNull(form.sshPort),
+    user: form.sshUser.trim(),
+    auth,
+  };
+}
+
+/** Saving keeps secrets only where the user asked; see `toAuth` / `toTunnel`. */
+export function toInput(form: FormState, purpose: "test" | "save" = "save"): ConnectionInput {
   return {
     id: form.id,
     name: form.name.trim(),
     driver: form.driver,
     color: form.color,
     target: toTarget(form),
-    auth: toAuth(form),
-    // TODO: re-enable SSL modes once driver-postgres supports TLS (tls.rs)
-    tls: { mode: "disable", caCert: null },
-    options: Object.fromEntries(
-      Object.entries(form.options).filter(([, v]) => v.trim() !== ""),
-    ),
-    savePassword: form.authKind === "password" && form.savePassword,
+    auth: toAuth(form, purpose),
+    tls: { mode: form.sslMode, caCert: blankToNull(form.caCert) },
+    tunnel: toTunnel(form, purpose),
+    options: Object.fromEntries(Object.entries(form.options).filter(([, v]) => v.trim() !== "")),
+    // Unkept secrets were turned into prompts above, so this only keeps wanted ones.
+    savePassword: purpose === "save",
   };
 }
 
@@ -206,35 +327,35 @@ function urlDatabase(url: string): string {
   return rest.slice(slash + 1).split(/[?#]/)[0].trim();
 }
 
+function checkPort(value: string): string | undefined {
+  const port = value.trim();
+  if (!port) return undefined;
+  if (!/^\d+$/.test(port)) return "Port must be a number.";
+  if (Number(port) < 1 || Number(port) > 65535) return "Port must be between 1 and 65535.";
+  return undefined;
+}
+
 /**
  * Field errors for the form. Testing doesn't need a name, so `purpose`
  * decides whether it is checked.
  */
-export function validate(
-  form: FormState,
-  driver: DriverInfo,
-  purpose: "test" | "save",
-): FormErrors {
+export function validate(form: FormState, driver: DriverInfo, purpose: "test" | "save"): FormErrors {
   const errors: FormErrors = {};
   if (purpose === "save" && !form.name.trim()) errors.name = "Enter a name for this connection.";
 
   switch (form.method) {
     case "host": {
       if (!form.host.trim()) errors.host = "Enter a host name or IP address.";
-      const port = form.port.trim();
-      if (port && !/^\d+$/.test(port)) errors.port = "Port must be a number.";
-      else if (port && (Number(port) < 1 || Number(port) > 65535))
-        errors.port = "Port must be between 1 and 65535.";
+      const port = checkPort(form.port);
+      if (port) errors.port = port;
       if (!form.database.trim()) errors.database = DATABASE_REQUIRED;
       break;
     }
     case "url": {
       const url = form.url.trim();
       if (!url) errors.url = "Paste a connection URL.";
-      else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url))
-        errors.url = `URL must start with ${form.driver}://`;
-      else if (!urlDatabase(url))
-        errors.url = `Add the database to the URL, e.g. ${form.driver}://host:port/mydb`;
+      else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) errors.url = `URL must start with ${form.driver}://`;
+      else if (!urlDatabase(url)) errors.url = `Add the database to the URL, e.g. ${form.driver}://host:port/mydb`;
       break;
     }
     case "socket":
@@ -247,6 +368,23 @@ export function validate(
   }
 
   if (needsUser(form.authKind) && !form.user.trim()) errors.user = "Enter a user name.";
+  if (form.authKind === "clientCert") {
+    if (!form.certPath.trim()) errors.certPath = "Choose the client certificate (PEM).";
+    if (!form.keyPath.trim()) errors.keyPath = "Choose the client key (PEM).";
+  }
+
+  if (form.sshEnabled) {
+    if (form.sshSource === "config") {
+      if (!form.sshAlias.trim()) errors.sshAlias = "Choose a host from ~/.ssh/config.";
+    } else {
+      if (!form.sshHost.trim()) errors.sshHost = "Enter the SSH host.";
+      if (!form.sshUser.trim()) errors.sshUser = "Enter the SSH user.";
+    }
+    const port = checkPort(form.sshPort);
+    if (port) errors.sshPort = port;
+    if (form.sshAuth === "key" && !form.sshKeyPath.trim()) errors.sshKeyPath = "Choose the private key file.";
+    if (form.method === "socket") errors.sshEnabled = "An SSH tunnel can't reach a Unix socket.";
+  }
 
   for (const spec of driver.extraOptions) {
     if (spec.required && !form.options[spec.key]?.trim()) {

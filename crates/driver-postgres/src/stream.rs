@@ -15,9 +15,10 @@ use crate::{
     types::decode_row,
 };
 
-/// Rows of one query, read as the server sends them.
-/// TODO: rows that arrive faster than they are read pile up in memory;
-/// switch to cursor/portal paging for very large results.
+/// Rows of one query, read as the server sends them. Rows that arrive
+/// faster than they are read are buffered by tokio-postgres; the app reads
+/// them as fast as they come into a capped result buffer (src-tauri/src/results),
+/// and closing the stream at the cap cancels the query on the server.
 pub struct PgRowStream {
     rows: Pin<Box<tokio_postgres::RowStream>>,
     peeked: Option<Row>, // read ahead one row so `has_more` is exact

@@ -9,6 +9,7 @@ import { RunButton } from "@/features/console/components/run-button";
 import { useConsoleShortcuts } from "@/features/console/hooks/use-console-shortcuts";
 import { useConsoleTabs } from "@/features/console/hooks/use-console-tabs";
 import { cancelRun, useRunQuery } from "@/features/console/hooks/use-run-query";
+import { cancelWhenEditorReady } from "@/features/console/model/editor-registry";
 import { colorVar } from "@/features/connections/model/colors";
 import { useQueryRunsStore } from "@/stores/query-runs";
 import { useSchemaCatalogStore } from "@/stores/schema-catalog";
@@ -19,6 +20,7 @@ export function ConsoleView({
   sessionId,
   driverId,
   color,
+  active = true,
 }: {
   connectionId: string;
   /** The open session queries run on. */
@@ -27,6 +29,8 @@ export function ConsoleView({
   driverId: string;
   /** Connection colour; marks the active tab. */
   color: string | null | undefined;
+  /** False while another workspace view covers the console; its shortcuts pause. */
+  active?: boolean;
 }) {
   const { tabSet, actions } = useConsoleTabs(connectionId);
   /** Tab waiting for the user to confirm it may be closed. */
@@ -45,6 +49,7 @@ export function ConsoleView({
     const runs = useQueryRunsStore.getState();
     if (runs.runningTab[sessionId] === tabId) void cancelRun(sessionId);
     runs.discard(tabId);
+    cancelWhenEditorReady(tabId);
     actions.close(tabId);
   };
 
@@ -56,11 +61,11 @@ export function ConsoleView({
     else close(tab.id);
   };
 
-  // While the dialog is open the shortcuts would act on tabs hidden behind it.
+  // While the dialog is open, or another view shows, the shortcuts would act on hidden tabs.
   useConsoleShortcuts({
-    onNewTab: () => !confirming && actions.open(),
-    onCloseTab: () => tabSet && !confirming && requestClose(tabSet.activeId),
-    onCycleTab: (step) => !confirming && actions.cycle(step),
+    onNewTab: () => active && !confirming && actions.open(),
+    onCloseTab: () => active && tabSet && !confirming && requestClose(tabSet.activeId),
+    onCycleTab: (step) => active && !confirming && actions.cycle(step),
   });
 
   if (!tabSet) {

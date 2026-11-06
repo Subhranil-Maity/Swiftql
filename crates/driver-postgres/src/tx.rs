@@ -9,13 +9,14 @@ use crate::sql::leading_keywords;
 pub type TxState = Arc<Mutex<TxStatus>>;
 
 /// tokio-postgres doesn't expose the server's transaction status, so it is
-/// tracked from the statements we run.
-/// TODO: procedures can COMMIT / ROLLBACK inside CALL, which isn't seen here.
+/// tracked from the statements we run. A procedure can COMMIT / ROLLBACK
+/// inside CALL, so after a CALL the connection asks the server (`Call`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxCommand {
     Begin,      // BEGIN, START TRANSACTION, COMMIT/ROLLBACK AND CHAIN
     End,        // COMMIT, END, ROLLBACK, ABORT, PREPARE TRANSACTION
     RollbackTo, // ROLLBACK TO SAVEPOINT: leaves a failed transaction usable again
+    Call,       // CALL: the procedure may have ended or started a transaction
     Other,
 }
 
@@ -34,9 +35,14 @@ impl TxCommand {
             ["COMMIT" | "END" | "ROLLBACK" | "ABORT", ..] if chain => Self::Begin,
             ["COMMIT" | "END" | "ROLLBACK" | "ABORT", ..] => Self::End,
             ["PREPARE", "TRANSACTION", ..] => Self::End,
+            ["CALL", ..] => Self::Call,
             _ => Self::Other,
         }
     }
+}
+
+pub fn set(state: &TxState, status: TxStatus) {
+    *state.lock().unwrap_or_else(|e| e.into_inner()) = status;
 }
 
 pub fn get(state: &TxState) -> TxStatus {
@@ -48,7 +54,7 @@ pub fn after_success(state: &TxState, command: TxCommand) {
     *status = match command {
         TxCommand::Begin | TxCommand::RollbackTo => TxStatus::InTransaction,
         TxCommand::End => TxStatus::Idle, // COMMIT of a failed transaction rolls back
-        TxCommand::Other => *status,
+        TxCommand::Call | TxCommand::Other => *status,
     };
 }
 

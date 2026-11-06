@@ -5,9 +5,8 @@ import { Empty, EmptyDescription, EmptyHeader } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDuration, MessagesLog } from "@/features/console/components/messages-log";
-import { ROW_LIMIT } from "@/features/console/hooks/use-run-query";
 import { editorFor } from "@/features/console/model/editor-registry";
-import type { MessageEntry, OutputView, TabRun } from "@/features/console/model/run";
+import type { MessageEntry, OutputView, StatementResult, TabRun } from "@/features/console/model/run";
 import { cn } from "@/lib/utils";
 import { useQueryRunsStore } from "@/stores/query-runs";
 
@@ -33,8 +32,10 @@ function messagesDot(entries: MessageEntry[]): "error" | "notice" | null {
   return dot;
 }
 
-function rowsLabel(n: number, truncated: boolean): string {
-  if (truncated) return `${n.toLocaleString()}+ rows`;
+/** Rows held; "+" while loading or when reading stopped before the end. */
+function rowsLabel(st: StatementResult): string {
+  const n = st.total;
+  if (st.resultState !== "complete" && st.resultState !== "failed") return `${n.toLocaleString()}+ rows`;
   return n === 1 ? "1 row" : `${n.toLocaleString()} rows`;
 }
 
@@ -119,7 +120,7 @@ export function OutputPanel({ tabId }: { tabId: string }) {
             {results.map((st, i) => (
               <TabsTrigger key={st.index} value={String(st.index)} className={TRIGGER_CLASS} title={st.sql}>
                 Result {i + 1}
-                <span className="text-muted-foreground">· {rowsLabel(st.rows.length, st.truncated)}</span>
+                <span className="text-muted-foreground">· {rowsLabel(st)}</span>
               </TabsTrigger>
             ))}
             <TabsTrigger value="messages" className={TRIGGER_CLASS}>
@@ -145,7 +146,7 @@ export function OutputPanel({ tabId }: { tabId: string }) {
       <div className="min-h-0 flex-1 bg-background">
         {shown?.columns ? (
           <Suspense fallback={<Spinner className="m-4 text-muted-foreground" />}>
-            <ResultGrid key={`${run?.startedAt}-${shown.index}`} result={shown} rowLimit={ROW_LIMIT} />
+            <ResultGrid key={`${run?.startedAt}-${shown.index}`} result={shown} sessionId={run!.sessionId} />
           </Suspense>
         ) : (
           <MessagesLog entries={messages} onJump={jumpTo} />

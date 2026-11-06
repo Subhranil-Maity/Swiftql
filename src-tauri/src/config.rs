@@ -79,7 +79,10 @@ pub async fn recent_connections(
     config: State<'_, Config>,
     limit: Option<u32>,
 ) -> ConfigResult<Vec<SavedConnection>> {
-    blocking(&config, move |c| c.connections().recent(limit.unwrap_or(10))).await
+    blocking(&config, move |c| {
+        c.connections().recent(limit.unwrap_or(10))
+    })
+    .await
 }
 
 #[tauri::command]

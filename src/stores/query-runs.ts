@@ -12,7 +12,7 @@ import {
   type StatementResult,
   type TabRun,
 } from "@/features/console/model/run";
-import type { RunEvent, RunSummary } from "@/lib/ipc";
+import { api, type RunEvent, type RunSummary } from "@/lib/ipc";
 
 /** Oldest messages are dropped past this. */
 const MAX_MESSAGES = 2000;
@@ -52,6 +52,14 @@ function withMessages(log: MessageEntry[] | undefined, ...added: MessageInput[])
   return next.length > MAX_MESSAGES ? next.slice(next.length - MAX_MESSAGES) : next;
 }
 
+/** Lets the backend drop the rows a replaced or discarded run held. */
+function releaseResults(run: TabRun | undefined) {
+  const ids = run?.statements.flatMap((st) => (st.resultId ? [st.resultId] : [])) ?? [];
+  if (run && ids.length > 0) {
+    api.releaseResults(run.sessionId, ids).catch(() => {}); // the session may be gone
+  }
+}
+
 function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   const { [key]: _, ...rest } = record;
   return rest;
@@ -63,10 +71,13 @@ export const useQueryRunsStore = create<QueryRunsState>()((set) => ({
   runningTab: {},
 
   begin: (tabId, sessionId, kind, statements) =>
-    set((s) => ({
+    set((s) => {
+      releaseResults(s.runs[tabId]);
+      return {
       runs: {
         ...s.runs,
         [tabId]: {
+          sessionId,
           status: "running",
           kind,
           view: "messages",
@@ -78,7 +89,7 @@ export const useQueryRunsStore = create<QueryRunsState>()((set) => ({
               offset: st.offset,
               status: "pending",
               rows: [],
-              truncated: false,
+              total: 0,
             }),
           ),
         },
@@ -92,7 +103,8 @@ export const useQueryRunsStore = create<QueryRunsState>()((set) => ({
         }),
       },
       runningTab: { ...s.runningTab, [sessionId]: tabId },
-    })),
+      };
+    }),
 
   apply: (tabId, event, error) =>
     set((s) => {
@@ -114,7 +126,7 @@ export const useQueryRunsStore = create<QueryRunsState>()((set) => ({
           index: event.index,
           tag: event.tag,
           elapsedMs: event.elapsedMs ?? 0,
-          truncated: event.truncated,
+          resultState: event.result ?? null,
         });
       } else if (event.event === "statementFailed" && error) {
         log = withMessages(log, {
@@ -196,5 +208,8 @@ export const useQueryRunsStore = create<QueryRunsState>()((set) => ({
   clearMessages: (tabId) => set((s) => ({ messages: { ...s.messages, [tabId]: [] } })),
 
   discard: (tabId) =>
-    set((s) => ({ runs: withoutKey(s.runs, tabId), messages: withoutKey(s.messages, tabId) })),
+    set((s) => {
+      releaseResults(s.runs[tabId]);
+      return { runs: withoutKey(s.runs, tabId), messages: withoutKey(s.messages, tabId) };
+    }),
 }));

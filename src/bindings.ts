@@ -24,9 +24,10 @@ export const commands = {
 	listDrivers: () => typedError<DriverInfo_Serialize[], DbError_Serialize>(__TAURI_INVOKE("list_drivers")),
 	/**
 	 *  Opens a connection from unsaved form input, reads the server version and
-	 *  closes it again.
+	 *  closes it again. `password` / `ssh_secret` answer a prompt for a one-off
+	 *  test and are never saved.
 	 */
-	testConnection: (input: ConnectionInput_Deserialize) => typedError<ServerVersion, DbError_Serialize>(__TAURI_INVOKE("test_connection", { input })),
+	testConnection: (input: ConnectionInput_Deserialize, password: string | null, sshSecret: string | null) => typedError<ServerVersion, DbError_Serialize>(__TAURI_INVOKE("test_connection", { input, password, sshSecret })),
 	/**
 	 *  Connects to a saved connection and closes it again, to show whether it
 	 *  works. Nothing is recorded: the result is only for the current screen.
@@ -38,36 +39,87 @@ export const commands = {
 	/**
 	 *  Opens a saved connection and keeps it as a session.
 	 * 
-	 *  `password` is used once and never saved. Without it, a connection that
-	 *  has no saved password fails with code `PASSWORD_REQUIRED`.
+	 *  `password` and `ssh_secret` (SSH password or key passphrase) are used
+	 *  once and never saved. Without them, a connection that has no saved one
+	 *  fails with code `PASSWORD_REQUIRED` / `SSH_PASSWORD_REQUIRED` (or, for an
+	 *  encrypted key, `SSH_PASSPHRASE_REQUIRED` from the driver). An unknown SSH
+	 *  host fails with `SSH_HOST_UNKNOWN` until `trust_ssh_host`.
 	 */
-	connect: (id: string, password: string | null) => typedError<SessionInfo, DbError_Serialize>(__TAURI_INVOKE("connect", { id, password })),
+	connect: (id: string, password: string | null, sshSecret: string | null) => typedError<SessionInfo, DbError_Serialize>(__TAURI_INVOKE("connect", { id, password, sshSecret })),
 	disconnect: (sessionId: string) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("disconnect", { sessionId })),
 	listSessions: () => typedError<SessionInfo[], DbError_Serialize>(__TAURI_INVOKE("list_sessions")),
 	/**
 	 *  Runs `statements` in order on a session and stops at the first error.
-	 *  Statements that return rows send at most `row_limit` of them (0 = all);
-	 *  the rest is cancelled on the server.
+	 *  Rows are held up to the `query.maxRowsHeld` / `query.maxResultMb` caps;
+	 *  past them the query is cancelled on the server.
 	 * 
 	 *  Fails with `NotFound` for an unknown session and `Busy` while another run
 	 *  holds the session. Statement errors are `statementFailed` events, not
 	 *  errors of the command.
 	 */
-	runStatements: (sessionId: string, statements: string[], rowLimit: number, onEvent: Channel<RunEvent_Deserialize>) => typedError<RunSummary_Serialize, DbError_Serialize>(__TAURI_INVOKE("run_statements", { sessionId, statements, rowLimit, onEvent })),
+	runStatements: (sessionId: string, statements: string[], onEvent: Channel<RunEvent_Deserialize>) => typedError<RunSummary_Serialize, DbError_Serialize>(__TAURI_INVOKE("run_statements", { sessionId, statements, onEvent })),
 	/**
 	 *  Stops the session's run, if there is one. The running statement fails
-	 *  with `Cancelled` and the rest are not started.
+	 *  with `Cancelled` (or, while rows are read, keeps the rows read so far)
+	 *  and the rest are not started.
 	 */
 	cancelRun: (sessionId: string) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("cancel_run", { sessionId })),
+	/**
+	 *  Ends the open transaction with COMMIT or ROLLBACK. Fails with `Busy`
+	 *  while a run holds the session.
+	 */
+	endTransaction: (sessionId: string, commit: boolean) => typedError<TxStatus, DbError_Serialize>(__TAURI_INVOKE("end_transaction", { sessionId, commit })),
+	/**
+	 *  Rows `offset..offset + limit` of a result in display order. Works while
+	 *  the result is still loading; `total` says how many rows are held so far.
+	 */
+	fetchRows: (sessionId: string, resultId: string, offset: number, limit: number) => typedError<RowPage_Serialize, DbError_Serialize>(__TAURI_INVOKE("fetch_rows", { sessionId, resultId, offset, limit })),
+	/**
+	 *  Sorts the whole held result (type-aware, NULLs last, stable), or restores
+	 *  the original order with `None`. Fails with `Busy` while it is loading.
+	 */
+	sortResult: (sessionId: string, resultId: string, sort: ResultSort | null) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("sort_result", { sessionId, resultId, sort })),
+	/**  Forgets results the UI no longer shows (a tab re-ran or closed). */
+	releaseResults: (sessionId: string, resultIds: string[]) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("release_results", { sessionId, resultIds })),
+	/**  Part of a result as text in `format`, for Copy as. */
+	copyResult: (sessionId: string, resultId: string, format: ExportFormat, selection: ResultSelection_Deserialize) => typedError<string, DbError_Serialize>(__TAURI_INVOKE("copy_result", { sessionId, resultId, format, selection })),
+	/**
+	 *  Asks where to save, then writes part of a result there in `format`.
+	 *  None when the dialog is cancelled.
+	 */
+	exportResult: (sessionId: string, resultId: string, format: ExportFormat, selection: ResultSelection_Deserialize, defaultName: string) => typedError<ExportOutcome | null, DbError_Serialize>(__TAURI_INVOKE("export_result", { sessionId, resultId, format, selection, defaultName })),
 	/**
 	 *  Runs on the session's connection, so it waits behind a running query and
 	 *  fails inside a failed transaction like any other statement.
 	 */
 	introspect: (sessionId: string, scope: IntrospectScope) => typedError<SchemaSnapshot_Serialize, DbError_Serialize>(__TAURI_INVOKE("introspect", { sessionId, scope })),
+	/**
+	 *  Starts listening on `channel` for the Notifications view. Returns the
+	 *  channels listened on now.
+	 */
+	listenChannel: (sessionId: string, channel: string) => typedError<string[], DbError_Serialize>(__TAURI_INVOKE("listen_channel", { sessionId, channel })),
+	/**  Stops listening on `channel`; the listener connection closes with the last one. */
+	unlistenChannel: (sessionId: string, channel: string) => typedError<string[], DbError_Serialize>(__TAURI_INVOKE("unlisten_channel", { sessionId, channel })),
+	listListenChannels: (sessionId: string) => typedError<string[], DbError_Serialize>(__TAURI_INVOKE("list_listen_channels", { sessionId })),
+	/**
+	 *  NOTIFY `channel` with `payload`, on the listener connection (opened if
+	 *  needed) so it doesn't wait behind a console query.
+	 */
+	sendNotify: (sessionId: string, channel: string, payload: string) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("send_notify", { sessionId, channel, payload })),
+	/**  Hosts named in `~/.ssh/config` (no wildcard patterns); empty without one. */
+	listSshHosts: () => typedError<SshConfigHost_Serialize[], DbError_Serialize>(__TAURI_INVOKE("list_ssh_hosts")),
+	/**
+	 *  Trusts a host key the user checked (the `key` from an `SSH_HOST_UNKNOWN`
+	 *  error's detail). Written to SwiftQL's own known_hosts file only.
+	 */
+	trustSshHost: (host: string, port: number, key: string) => typedError<null, DbError_Serialize>(__TAURI_INVOKE("trust_ssh_host", { host, port, key })),
+	/**  Forgets every host trusted in SwiftQL (`~/.ssh/known_hosts` is untouched). */
+	clearTrustedSshHosts: () => typedError<null, DbError_Serialize>(__TAURI_INVOKE("clear_trusted_ssh_hosts")),
 };
 
 /** Events */
 export const events = {
+	notificationReceived: makeEvent<NotificationReceived_Serialize, NotificationReceived_Deserialize>("notification-received"),
 	settingsChanged: makeEvent<SettingsChanged_Serialize, SettingsChanged_Deserialize>("settings-changed"),
 };
 
@@ -75,6 +127,14 @@ export const events = {
 export type Auth = { kind: "none" } | { kind: "password"; user: string; password: Secret } | { kind: "passwordPrompt"; user: string } | { kind: "pgPass"; user: string } | { kind: "clientCert"; user: string; cert: string; key: string } | { kind: "token"; user: string; provider: TokenProvider };
 
 export type AuthKind = "none" | "password" | "passwordPrompt" | "pgPass" | "clientCert" | "token";
+
+export type BooleanDisplay = 
+/**  true / false */
+"text" | 
+/**  t / f, like psql */
+"short" | 
+/**  ✓ / ✗ */
+"symbol";
 
 export type BulkSupport = "none" | "insert" | "copyProtocol" | "loadData";
 
@@ -120,11 +180,7 @@ export type Capabilities = {
 	connectionString: boolean,
 };
 
-export type Column = {
-	name: string,
-	dataType: string,
-	nullable: boolean,
-};
+export type Column = Column_Serialize | Column_Deserialize;
 
 export type ColumnMeta = ColumnMeta_Serialize | ColumnMeta_Deserialize;
 
@@ -142,6 +198,24 @@ export type ColumnMeta_Serialize = {
 	nativeType: string,
 	nullable: boolean | null,
 	sourceTable: TableRef | null,
+};
+
+export type Column_Deserialize = {
+	name: string,
+	dataType: string,
+	nullable: boolean,
+	comment?: string | null,
+	/**  The default expression as SQL, e.g. "nextval('users_id_seq'::regclass)". */
+	default?: string | null,
+};
+
+export type Column_Serialize = {
+	name: string,
+	dataType: string,
+	nullable: boolean,
+	comment: string | null,
+	/**  The default expression as SQL, e.g. "nextval('users_id_seq'::regclass)". */
+	default: string | null,
 };
 
 export type ConfigError = {
@@ -224,6 +298,13 @@ export type ConnectionSettings_Deserialize = {
 	 *  opens. 0 = off.
 	 */
 	checkOnStartup?: number,
+	/**  SSL mode of new connections. */
+	defaultSslMode?: SslMode,
+	sshHostKeyPolicy?: HostKeyPolicy,
+	/**  "Save password" starts checked in the connection form. */
+	savePasswordsByDefault?: boolean,
+	/**  LISTEN notifications kept per session before the oldest are dropped. */
+	notificationBuffer?: number,
 };
 
 export type ConnectionSettings_Serialize = {
@@ -234,6 +315,13 @@ export type ConnectionSettings_Serialize = {
 	 *  opens. 0 = off.
 	 */
 	checkOnStartup: number,
+	/**  SSL mode of new connections. */
+	defaultSslMode: SslMode,
+	sshHostKeyPolicy: HostKeyPolicy,
+	/**  "Save password" starts checked in the connection form. */
+	savePasswordsByDefault: boolean,
+	/**  LISTEN notifications kept per session before the oldest are dropped. */
+	notificationBuffer: number,
 };
 
 export type ConnectionStatus = ConnectionStatus_Serialize | ConnectionStatus_Deserialize;
@@ -276,7 +364,7 @@ export type DbError_Serialize = {
 
 export type DbValue = DbValue_Serialize | DbValue_Deserialize;
 
-export type DbValue_Deserialize = { type: "null" } | { type: "bool"; value: boolean } | { type: "int"; value: number } | { type: "float"; value: number | null } | { type: "decimal"; value: string } | { type: "bigInt"; value: string } | { type: "text"; value: string } | { type: "bytes"; value: number[] } | { type: "json"; value: Value } | { type: "uuid"; value: string } | { type: "date"; value: string } | { type: "time"; value: string } | { type: "timeTz"; value: {
+export type DbValue_Deserialize = { type: "null" } | { type: "bool"; value: boolean } | { type: "int"; value: number } | { type: "float"; value: FloatValue } | { type: "decimal"; value: string } | { type: "bigInt"; value: string } | { type: "text"; value: string } | { type: "bytes"; value: number[] } | { type: "json"; value: Value } | { type: "uuid"; value: string } | { type: "date"; value: string } | { type: "time"; value: string } | { type: "timeTz"; value: {
 	time: string,
 	offsetSeconds: number,
 } } | { type: "timestamp"; value: string } | { type: "timestampTz"; value: string } | { type: "interval"; value: {
@@ -300,7 +388,7 @@ export type DbValue_Deserialize = { type: "null" } | { type: "bool"; value: bool
 	text: string,
 } };
 
-export type DbValue_Serialize = { type: "null" } | { type: "bool"; value: boolean } | { type: "int"; value: number } | { type: "float"; value: number | null } | { type: "decimal"; value: string } | { type: "bigInt"; value: string } | { type: "text"; value: string } | { type: "bytes"; value: number[] } | { type: "json"; value: Value } | { type: "uuid"; value: string } | { type: "date"; value: string } | { type: "time"; value: string } | { type: "timeTz"; value: {
+export type DbValue_Serialize = { type: "null" } | { type: "bool"; value: boolean } | { type: "int"; value: number } | { type: "float"; value: FloatValue } | { type: "decimal"; value: string } | { type: "bigInt"; value: string } | { type: "text"; value: string } | { type: "bytes"; value: number[] } | { type: "json"; value: Value } | { type: "uuid"; value: string } | { type: "date"; value: string } | { type: "time"; value: string } | { type: "timeTz"; value: {
 	time: string,
 	offsetSeconds: number,
 } } | { type: "timestamp"; value: string } | { type: "timestampTz"; value: string } | { type: "interval"; value: {
@@ -323,6 +411,8 @@ export type DbValue_Serialize = { type: "null" } | { type: "bool"; value: boolea
 	typeName: string,
 	text: string,
 } };
+
+export type Density = "compact" | "comfortable";
 
 /**  What the connection form needs to know about a driver. */
 export type DriverInfo = DriverInfo_Serialize | DriverInfo_Deserialize;
@@ -358,6 +448,13 @@ export type EditorSettings_Deserialize = {
 	fontSize?: number,
 	tabSize?: number,
 	wordWrap?: boolean,
+	/**  Case of keywords inserted by autocomplete. */
+	keywordCase?: KeywordCase,
+	lineNumbers?: boolean,
+	autocomplete?: boolean,
+	/**  Syntax checking while typing. */
+	lint?: boolean,
+	highlightActiveLine?: boolean,
 };
 
 export type EditorSettings_Serialize = {
@@ -365,11 +462,25 @@ export type EditorSettings_Serialize = {
 	fontSize: number,
 	tabSize: number,
 	wordWrap: boolean,
+	/**  Case of keywords inserted by autocomplete. */
+	keywordCase: KeywordCase,
+	lineNumbers: boolean,
+	autocomplete: boolean,
+	/**  Syntax checking while typing. */
+	lint: boolean,
+	highlightActiveLine: boolean,
 };
 
 export type ErrorKind = "syntax" | "auth" | "network" | "permission" | "constraint" | "cancelled" | "timeout" | "notFound" | "unsupported" | "busy" | "internal";
 
 export type ExplainSupport = "none" | "text" | "json" | "jsonWithAnalyze";
+
+export type ExportFormat = "csv" | "tsv" | "markdown" | "json";
+
+export type ExportOutcome = {
+	path: string,
+	rows: number,
+};
 
 export type FieldKind = { type: "text" } | { type: "number" } | { type: "password" } | { type: "bool" } | { type: "file" } | { type: "select"; options: string[] };
 
@@ -394,14 +505,54 @@ export type FieldSpec_Serialize = {
 	default: string | null,
 };
 
-export type GeneralSettings = GeneralSettings_Serialize | GeneralSettings_Deserialize;
+export type FkAction = "noAction" | "restrict" | "cascade" | "setNull" | "setDefault";
 
-export type GeneralSettings_Deserialize = {
-	theme?: Theme,
+/**
+ *  How a float travels to the UI: JSON has no NaN or infinities, so those
+ *  are sent as the strings Postgres prints.
+ */
+export type FloatValue = number | null | SpecialFloat;
+
+/**  `columns[i]` references `ref_columns[i]`. */
+export type ForeignKey = {
+	name: string,
+	columns: string[],
+	refSchema: string,
+	refTable: string,
+	refColumns: string[],
+	onDelete: FkAction,
+	onUpdate: FkAction,
 };
 
+/**  Appearance. */
+export type GeneralSettings = GeneralSettings_Serialize | GeneralSettings_Deserialize;
+
+/**  Appearance. */
+export type GeneralSettings_Deserialize = {
+	theme?: Theme,
+	/**  Base UI font size in px. */
+	uiFontSize?: number,
+	density?: Density,
+	/**  How NULL shows in result grids. */
+	nullDisplay?: string,
+	booleanDisplay?: BooleanDisplay,
+	timestampDisplay?: TimestampDisplay,
+	/**  Thousands separators in numeric cells. */
+	numberGrouping?: boolean,
+};
+
+/**  Appearance. */
 export type GeneralSettings_Serialize = {
 	theme: Theme,
+	/**  Base UI font size in px. */
+	uiFontSize: number,
+	density: Density,
+	/**  How NULL shows in result grids. */
+	nullDisplay: string,
+	booleanDisplay: BooleanDisplay,
+	timestampDisplay: TimestampDisplay,
+	/**  Thousands separators in numeric cells. */
+	numberGrouping: boolean,
 };
 
 /**  What a health check found. */
@@ -418,7 +569,27 @@ export type HealthState =
 /**  Needs a password that isn't saved, so it wasn't checked. */
 "needsPassword";
 
-export type IntrospectScope = { scope: "schemas" } | { scope: "tables"; schema: string } | { scope: "tableDetails"; schema: string; table: string } | { scope: "catalog" };
+export type HostKeyPolicy = 
+/**  Fail with `SSH_HOST_UNKNOWN` so the user can look at the fingerprint. */
+"ask" | 
+/**  Trust and remember it. */
+"acceptNew" | 
+/**  Refuse it. */
+"strict";
+
+export type Index = {
+	name: string,
+	/**  Column names in index order; expression parts are left out (see `definition`). */
+	columns: string[],
+	unique: boolean,
+	primary: boolean,
+	/**  Full `CREATE INDEX` statement as the server prints it. */
+	definition: string,
+};
+
+export type IntrospectScope = { scope: "schemas" } | { scope: "tables"; schema: string } | { scope: "tableDetails"; schema: string; table: string } | { scope: "catalog" } | 
+/**  Like Catalog, plus keys, indexes, comments and sizes (the Tables and Graph views). */
+{ scope: "model" };
 
 export type KeyringStatus = KeyringStatus_Serialize | KeyringStatus_Deserialize;
 
@@ -431,6 +602,8 @@ export type KeyringStatus_Serialize = {
 	available: boolean,
 	message: string | null,
 };
+
+export type KeywordCase = "upper" | "lower";
 
 export type LogicalType = { kind: "bool" } | { kind: "int" } | { kind: "float" } | { kind: "decimal" } | { kind: "text" } | { kind: "binary" } | { kind: "uuid" } | { kind: "json" } | { kind: "date" } | { kind: "time" } | { kind: "timeTz" } | { kind: "timestamp" } | { kind: "timestampTz" } | { kind: "interval" } | { kind: "inet" } | { kind: "cidr" } | { kind: "money" } | { kind: "range"; of: LogicalType } | { kind: "array"; of: LogicalType } | { kind: "enum" } | { kind: "other" };
 
@@ -466,18 +639,127 @@ export type Notice_Serialize = {
 	hint: string | null,
 };
 
+/**  `Notification` for the event (events need Deserialize too). */
+export type NotificationPayload = {
+	channel: string,
+	payload: string,
+	processId: number,
+	receivedAt: string,
+};
+
+/**
+ *  A notification arrived, or `dropped` of them were lost because the UI
+ *  couldn't keep up.
+ */
+export type NotificationReceived = NotificationReceived_Serialize | NotificationReceived_Deserialize;
+
+/**
+ *  A notification arrived, or `dropped` of them were lost because the UI
+ *  couldn't keep up.
+ */
+export type NotificationReceived_Deserialize = {
+	sessionId: string,
+	source: Source,
+	notification?: NotificationPayload | null,
+	dropped: number,
+};
+
+/**
+ *  A notification arrived, or `dropped` of them were lost because the UI
+ *  couldn't keep up.
+ */
+export type NotificationReceived_Serialize = {
+	sessionId: string,
+	source: Source,
+	notification: NotificationPayload | null,
+	dropped: number,
+};
+
 export type QuerySettings = QuerySettings_Serialize | QuerySettings_Deserialize;
 
 export type QuerySettings_Deserialize = {
-	rowLimit?: number,
+	/**  Rows the grid fetches from the backend at a time. */
+	pageSize?: number,
+	/**  Rows of one result held in memory; reading stops there. 0 = no limit. */
+	maxRowsHeld?: number,
+	/**  Estimated size of one result held in memory, in MB; reading stops there. */
+	maxResultMb?: number,
 	queryTimeoutSecs?: number,
+	/**  Ask before DROP, TRUNCATE, and DELETE / UPDATE without WHERE. */
 	confirmDestructive?: boolean,
+	transactionMode?: TransactionMode,
 };
 
 export type QuerySettings_Serialize = {
-	rowLimit: number,
+	/**  Rows the grid fetches from the backend at a time. */
+	pageSize: number,
+	/**  Rows of one result held in memory; reading stops there. 0 = no limit. */
+	maxRowsHeld: number,
+	/**  Estimated size of one result held in memory, in MB; reading stops there. */
+	maxResultMb: number,
 	queryTimeoutSecs: number,
+	/**  Ask before DROP, TRUNCATE, and DELETE / UPDATE without WHERE. */
 	confirmDestructive: boolean,
+	transactionMode: TransactionMode,
+};
+
+/**
+ *  Part of a result in display order: row ranges (`[start, end)`; all rows
+ *  when absent) and source column indices.
+ */
+export type ResultSelection = ResultSelection_Serialize | ResultSelection_Deserialize;
+
+/**
+ *  Part of a result in display order: row ranges (`[start, end)`; all rows
+ *  when absent) and source column indices.
+ */
+export type ResultSelection_Deserialize = {
+	rows?: ([number, number])[] | null,
+	columns: number[],
+};
+
+/**
+ *  Part of a result in display order: row ranges (`[start, end)`; all rows
+ *  when absent) and source column indices.
+ */
+export type ResultSelection_Serialize = {
+	rows: ([number, number])[] | null,
+	columns: number[],
+};
+
+export type ResultSort = {
+	column: number,
+	direction: SortDirection,
+};
+
+export type ResultState = 
+/**  Rows are still being read. */
+"loading" | 
+/**  Every row was read. */
+"complete" | 
+/**  Reading stopped at the row or size cap; the rest wasn't read. */
+"truncated" | 
+/**  Stopped by the user; the rows read so far are kept. */
+"cancelled" | 
+/**  The statement failed while its rows were read. */
+"failed";
+
+export type RowPage = RowPage_Serialize | RowPage_Deserialize;
+
+export type RowPage_Deserialize = {
+	/**  Rows from `offset`, in display (sorted) order. */
+	rows: DbValue_Deserialize[][],
+	/**  Rows held so far. */
+	total: number,
+	state: ResultState,
+};
+
+export type RowPage_Serialize = {
+	/**  Rows from `offset`, in display (sorted) order. */
+	rows: DbValue_Serialize[][],
+	/**  Rows held so far. */
+	total: number,
+	state: ResultState,
 };
 
 /**
@@ -491,28 +773,42 @@ export type RunEvent = RunEvent_Serialize | RunEvent_Deserialize;
  *  in the list passed to `run_statements`.
  */
 export type RunEvent_Deserialize = { event: "statementStarted"; index: number } | 
-/**  Before any `rows`; only for statements that return rows. */
-{ event: "columns"; index: number; columns: ColumnMeta_Deserialize[] } | { event: "rows"; index: number; rows: DbValue_Deserialize[][] } | { event: "notice"; index: number; notice: Notice_Deserialize } | { event: "statementFinished"; index: number; 
+/**
+ *  Before any `rows`; only for statements that return rows. The rows are
+ *  held under `resultId` for `fetch_rows`.
+ */
+{ event: "columns"; index: number; columns: ColumnMeta_Deserialize[]; resultId: string } | 
+/**  The first rows of a result (up to `query.pageSize`), so they show at once. */
+{ event: "rows"; index: number; rows: DbValue_Deserialize[][] } | 
+/**  Rows held so far, while they're read. */
+{ event: "progress"; index: number; buffered: number } | { event: "notice"; index: number; notice: Notice_Deserialize } | { event: "statementFinished"; index: number; 
 /**  e.g. "INSERT 0 3", "CREATE TABLE", "SELECT 1000". */
 tag: string; 
-/**  Rows returned (as far as they were read) or changed. */
+/**  Rows held or changed. */
 rows: number; elapsedMs: number | null; 
-/**  The row limit was reached and the rest was not fetched. */
-truncated: boolean } | { event: "statementFailed"; index: number; error: DbError_Deserialize; elapsedMs: number | null };
+/**  For statements that return rows: whether every row was read. */
+result?: ResultState | null } | { event: "statementFailed"; index: number; error: DbError_Deserialize; elapsedMs: number | null };
 
 /**
  *  What happens during a run, in order. `index` is the statement's position
  *  in the list passed to `run_statements`.
  */
 export type RunEvent_Serialize = { event: "statementStarted"; index: number } | 
-/**  Before any `rows`; only for statements that return rows. */
-{ event: "columns"; index: number; columns: ColumnMeta_Serialize[] } | { event: "rows"; index: number; rows: DbValue_Serialize[][] } | { event: "notice"; index: number; notice: Notice_Serialize } | { event: "statementFinished"; index: number; 
+/**
+ *  Before any `rows`; only for statements that return rows. The rows are
+ *  held under `resultId` for `fetch_rows`.
+ */
+{ event: "columns"; index: number; columns: ColumnMeta_Serialize[]; resultId: string } | 
+/**  The first rows of a result (up to `query.pageSize`), so they show at once. */
+{ event: "rows"; index: number; rows: DbValue_Serialize[][] } | 
+/**  Rows held so far, while they're read. */
+{ event: "progress"; index: number; buffered: number } | { event: "notice"; index: number; notice: Notice_Serialize } | { event: "statementFinished"; index: number; 
 /**  e.g. "INSERT 0 3", "CREATE TABLE", "SELECT 1000". */
 tag: string; 
-/**  Rows returned (as far as they were read) or changed. */
+/**  Rows held or changed. */
 rows: number; elapsedMs: number | null; 
-/**  The row limit was reached and the rest was not fetched. */
-truncated: boolean } | { event: "statementFailed"; index: number; error: DbError_Serialize; elapsedMs: number | null };
+/**  For statements that return rows: whether every row was read. */
+result: ResultState | null } | { event: "statementFailed"; index: number; error: DbError_Serialize; elapsedMs: number | null };
 
 export type RunSummary = RunSummary_Serialize | RunSummary_Deserialize;
 
@@ -586,11 +882,27 @@ export type SchemaSnapshot_Deserialize = { kind: "schemas"; data: Schema_Deseria
 	schemas: Schema_Deserialize[],
 	/**  Schemas unqualified names resolve against, in order (existing ones only). */
 	searchPath: string[],
+} } | 
+/**
+ *  Same shape as Catalog; the optional table and column fields are filled
+ *  in where the driver knows them.
+ */
+{ kind: "model"; data: {
+	schemas: Schema_Deserialize[],
+	searchPath: string[],
 } };
 
 export type SchemaSnapshot_Serialize = { kind: "schemas"; data: Schema_Serialize[] } | { kind: "tables"; data: Table_Serialize[] } | { kind: "tableDetails"; data: Table_Serialize } | { kind: "catalog"; data: {
 	schemas: Schema_Serialize[],
 	/**  Schemas unqualified names resolve against, in order (existing ones only). */
+	searchPath: string[],
+} } | 
+/**
+ *  Same shape as Catalog; the optional table and column fields are filled
+ *  in where the driver knows them.
+ */
+{ kind: "model"; data: {
+	schemas: Schema_Serialize[],
 	searchPath: string[],
 } };
 
@@ -656,15 +968,76 @@ export type Settings_Serialize = {
 	connection: ConnectionSettings_Serialize,
 };
 
+export type SortDirection = "asc" | "desc";
+
+export type Source = 
+/**  The session's connection (LISTEN run in the console). */
+"console" | 
+/**  The Notifications view's listener connection. */
+"listener";
+
+export type SpecialFloat = "NaN" | "Infinity" | "-Infinity";
+
 export type SshAuth = SshAuth_Serialize | SshAuth_Deserialize;
 
-export type SshAuth_Deserialize = { kind: "password"; password: Secret } | { kind: "key"; path: string; passphrase?: Secret | null } | { kind: "agent" };
+export type SshAuth_Deserialize = { kind: "password"; password: Secret } | 
+/**  A password that isn't saved; the app asks for it. */
+{ kind: "passwordPrompt" } | { kind: "key"; path: string; passphrase?: Secret | null } | { kind: "agent" } | 
+/**
+ *  IdentityFile keys from `~/.ssh/config`, then the default keys
+ *  (`~/.ssh/id_ed25519`, ...), then the agent, as `ssh` does.
+ */
+{ kind: "auto" };
 
-export type SshAuth_Serialize = { kind: "password"; password: Secret } | { kind: "key"; path: string; passphrase: Secret | null } | { kind: "agent" };
+export type SshAuth_Serialize = { kind: "password"; password: Secret } | 
+/**  A password that isn't saved; the app asks for it. */
+{ kind: "passwordPrompt" } | { kind: "key"; path: string; passphrase: Secret | null } | { kind: "agent" } | 
+/**
+ *  IdentityFile keys from `~/.ssh/config`, then the default keys
+ *  (`~/.ssh/id_ed25519`, ...), then the agent, as `ssh` does.
+ */
+{ kind: "auto" };
+
+/**  A `Host` alias from `~/.ssh/config`, resolved as `ssh <alias>` would. */
+export type SshConfigHost = SshConfigHost_Serialize | SshConfigHost_Deserialize;
+
+/**  A `Host` alias from `~/.ssh/config`, resolved as `ssh <alias>` would. */
+export type SshConfigHost_Deserialize = {
+	alias: string,
+	hostName: string,
+	user?: string | null,
+	port: number,
+	identityFiles: string[],
+	/**  ProxyJump hops, outermost first. */
+	proxyJump: string[],
+};
+
+/**  A `Host` alias from `~/.ssh/config`, resolved as `ssh <alias>` would. */
+export type SshConfigHost_Serialize = {
+	alias: string,
+	hostName: string,
+	user: string | null,
+	port: number,
+	identityFiles: string[],
+	/**  ProxyJump hops, outermost first. */
+	proxyJump: string[],
+};
+
+export type SshSource = 
+/**  Host, port, user and auth as entered. */
+{ kind: "manual" } | 
+/**
+ *  A `Host` entry of `~/.ssh/config`, resolved when connecting so later
+ *  edits apply: HostName, User, Port, IdentityFile, ProxyJump.
+ */
+{ kind: "config"; alias: string };
 
 export type SshTunnel = SshTunnel_Serialize | SshTunnel_Deserialize;
 
 export type SshTunnel_Deserialize = {
+	/**  Where host, port, user and keys come from. */
+	source?: SshSource,
+	/**  With `SshSource::Config`, an empty host / user / port uses the config's. */
 	host: string,
 	port?: number | null,
 	user: string,
@@ -672,6 +1045,9 @@ export type SshTunnel_Deserialize = {
 };
 
 export type SshTunnel_Serialize = {
+	/**  Where host, port, user and keys come from. */
+	source: SshSource,
+	/**  With `SshSource::Config`, an empty host / user / port uses the config's. */
 	host: string,
 	port: number | null,
 	user: string,
@@ -683,11 +1059,14 @@ export type SslMode = "disable" | "prefer" | "require" | "verifyCa" | "verifyFul
 /**  `Auth` without secret values; `saved` says whether the keyring has one. */
 export type StoredAuth = { kind: "none" } | { kind: "password"; user: string; saved: boolean } | { kind: "passwordPrompt"; user: string } | { kind: "pgPass"; user: string } | { kind: "clientCert"; user: string; cert: string; key: string } | { kind: "token"; user: string; provider: TokenProvider };
 
-export type StoredSshAuth = { kind: "password"; saved: boolean } | { kind: "key"; path: string; passphraseSaved: boolean } | { kind: "agent" };
+export type StoredSshAuth = { kind: "password"; saved: boolean } | { kind: "key"; path: string; passphraseSaved: boolean } | { kind: "agent" } | 
+/**  Keys from ~/.ssh/config, the default keys, then the agent. */
+{ kind: "auto" };
 
 export type StoredTunnel = StoredTunnel_Serialize | StoredTunnel_Deserialize;
 
 export type StoredTunnel_Deserialize = {
+	source?: SshSource,
 	host: string,
 	port?: number | null,
 	user: string,
@@ -695,12 +1074,17 @@ export type StoredTunnel_Deserialize = {
 };
 
 export type StoredTunnel_Serialize = {
+	source: SshSource,
 	host: string,
 	port: number | null,
 	user: string,
 	auth: StoredSshAuth,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table = Table_Serialize | Table_Deserialize;
 
 export type TableKind = "table" | "view" | "materializedView" | "foreignTable" | "partitionedTable";
@@ -711,16 +1095,42 @@ export type TableRef = {
 	column: string,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table_Deserialize = {
 	name: string,
 	kind: TableKind,
-	columns?: Column[] | null,
+	columns?: Column_Deserialize[] | null,
+	comment?: string | null,
+	/**  The planner's estimate, not a count. */
+	rowEstimate?: number | null,
+	/**  Table, indexes and TOAST together. */
+	sizeBytes?: number | null,
+	/**  Column names in key order; Some(empty) = loaded, no primary key. */
+	primaryKey?: string[] | null,
+	foreignKeys?: ForeignKey[] | null,
+	indexes?: Index[] | null,
 };
 
+/**
+ *  The `Option` fields beyond `columns` are only filled by `IntrospectScope::Model`
+ *  (None = not loaded, or the driver doesn't know).
+ */
 export type Table_Serialize = {
 	name: string,
 	kind: TableKind,
-	columns: Column[] | null,
+	columns: Column_Serialize[] | null,
+	comment: string | null,
+	/**  The planner's estimate, not a count. */
+	rowEstimate: number | null,
+	/**  Table, indexes and TOAST together. */
+	sizeBytes: number | null,
+	/**  Column names in key order; Some(empty) = loaded, no primary key. */
+	primaryKey: string[] | null,
+	foreignKeys: ForeignKey[] | null,
+	indexes: Index[] | null,
 };
 
 export type Target = Target_Serialize | Target_Deserialize;
@@ -732,6 +1142,12 @@ export type Target_Deserialize = { method: "url"; url: string } | { method: "hos
 export type Target_Serialize = { method: "url"; url: string } | { method: "host"; host: string; port: number | null; database: string | null } | { method: "socket"; path: string; database: string | null } | { method: "file"; path: string };
 
 export type Theme = "light" | "dark" | "system";
+
+export type TimestampDisplay = 
+/**  As the server sends it. */
+"iso" | 
+/**  timestamptz converted to the computer's time zone. */
+"local";
 
 export type TlsConfig = TlsConfig_Serialize | TlsConfig_Deserialize;
 
@@ -746,6 +1162,12 @@ export type TlsConfig_Serialize = {
 };
 
 export type TokenProvider = { provider: "awsIam"; region: string } | { provider: "azureAd" };
+
+export type TransactionMode = 
+/**  Every statement commits on its own (unless the script says BEGIN). */
+"auto" | 
+/**  A run starts a transaction when none is open; Commit / Rollback end it. */
+"manual";
 
 export type TxStatus = "idle" | "inTransaction" | "failed";
 
