@@ -14,17 +14,30 @@ export function selectColumnsSql(schema: string, table: string, columns: Column[
   return `SELECT\n${list}\nFROM ${displayQualifiedName(schema, table)};\n`;
 }
 
-/** "New INSERT": one row, DEFAULT where the column has one, else NULL, each labelled. */
-export function insertSql(schema: string, table: string, columns: Column[]): string {
+/** Drivers without the DEFAULT keyword in VALUES. */
+const NO_DEFAULT_KEYWORD = new Set(["sqlite"]);
+
+/**
+ * "New INSERT": one row, DEFAULT where the column has one, else NULL, each
+ * labelled. Where VALUES can't say DEFAULT (SQLite), columns with a default
+ * are left out of the list instead, which gives them their default.
+ */
+export function insertSql(schema: string, table: string, columns: Column[], driverId: string): string {
   const target = displayQualifiedName(schema, table);
-  if (columns.length === 0) return `INSERT INTO ${target} DEFAULT VALUES;\n`;
-  const names = columns.map((c) => `  ${ident(c.name)}`).join(",\n");
-  const values = columns
+  const omitDefaults = NO_DEFAULT_KEYWORD.has(driverId);
+  const listed = omitDefaults ? columns.filter((c) => c.default == null) : columns;
+  if (listed.length === 0) return `INSERT INTO ${target} DEFAULT VALUES;\n`;
+  const names = listed.map((c) => `  ${ident(c.name)}`).join(",\n");
+  const values = listed
     .map((c, i) => {
       const value = c.default != null ? "DEFAULT" : "NULL";
-      const comma = i < columns.length - 1 ? "," : "";
+      const comma = i < listed.length - 1 ? "," : "";
       return `  ${value}${comma} -- ${c.name} ${c.dataType}`;
     })
     .join("\n");
-  return `INSERT INTO ${target} (\n${names}\n) VALUES (\n${values}\n);\n`;
+  const skipped = columns.filter((c) => !listed.includes(c));
+  const note = skipped.length
+    ? `-- Left out, so they get their default: ${skipped.map((c) => c.name).join(", ")}\n`
+    : "";
+  return `${note}INSERT INTO ${target} (\n${names}\n) VALUES (\n${values}\n);\n`;
 }

@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::results::ResultStore;
 
-/// `Session::applied_timeout` before any `SET statement_timeout`.
+/// `Session::applied_timeout` before the query timeout is first set.
 pub const TIMEOUT_UNKNOWN: u32 = u32::MAX;
 
 pub struct Session {
@@ -39,7 +39,7 @@ pub struct Session {
     pub in_flight: Mutex<bool>,
     /// Results the grid pages through.
     pub results: ResultStore,
-    /// The `statement_timeout` (seconds) last set on the server.
+    /// The query timeout (seconds) last set on the connection.
     pub applied_timeout: AtomicU32,
     /// How this session was opened, to open helper connections (LISTEN) to
     /// the same server. None in tests.

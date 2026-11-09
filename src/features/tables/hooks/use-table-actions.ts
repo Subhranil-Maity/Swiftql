@@ -19,7 +19,7 @@ async function copy(text: string) {
 
 /** What a table's context menu can do; shared by the Tables list and the graph. */
 export function useTableActions() {
-  const { connectionId } = useWorkspace();
+  const { connectionId, driverId } = useWorkspace();
   const { openSql, openTableData } = useOpenTableData();
 
   return useMemo(
@@ -36,12 +36,12 @@ export function useTableActions() {
       newInsert: (e: TableEntry) =>
         void openSql({
           title: `Insert into ${e.table.name}`,
-          sql: insertSql(e.schema, e.table.name, e.table.columns ?? []),
+          sql: insertSql(e.schema, e.table.name, e.table.columns ?? [], driverId),
           runNow: false,
         }),
       showInGraph: (e: TableEntry) => useWorkspaceViewStore.getState().showInGraph(connectionId, e.key),
     }),
-    [connectionId, openSql, openTableData],
+    [connectionId, driverId, openSql, openTableData],
   );
 }
 

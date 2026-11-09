@@ -9,6 +9,7 @@ use driver_core::{
     error::DbError,
 };
 use driver_postgres::PgDriver;
+use driver_sqlite::SqliteDriver;
 use serde::Serialize;
 use specta::Type;
 use tauri::State;
@@ -17,7 +18,7 @@ pub struct DriverRegistry(HashMap<&'static str, Arc<dyn Driver>>);
 
 impl DriverRegistry {
     pub fn new() -> Self {
-        let drivers: [Arc<dyn Driver>; 1] = [Arc::new(PgDriver)];
+        let drivers: [Arc<dyn Driver>; 2] = [Arc::new(PgDriver), Arc::new(SqliteDriver)];
         Self(drivers.into_iter().map(|d| (d.id(), d)).collect())
     }
 
@@ -89,5 +90,15 @@ mod tests {
                 .unwrap()
                 .starts_with("data:image/svg+xml;base64,")
         );
+    }
+
+    #[test]
+    fn sqlite_is_registered() {
+        let registry = DriverRegistry::new();
+        let sqlite = registry.get("sqlite").expect("sqlite driver");
+        let info = DriverInfo::of(sqlite.as_ref());
+        assert_eq!(info.name, "SQLite");
+        assert_eq!(info.supported_targets, vec![TargetKind::File]);
+        assert!(!info.capabilities.listen_notify);
     }
 }

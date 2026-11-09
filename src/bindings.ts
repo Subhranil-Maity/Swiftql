@@ -23,6 +23,12 @@ export const commands = {
 	setAppState: (key: string, value: Value) => typedError<null, ConfigError>(__TAURI_INVOKE("set_app_state", { key, value })),
 	listDrivers: () => typedError<DriverInfo_Serialize[], DbError_Serialize>(__TAURI_INVOKE("list_drivers")),
 	/**
+	 *  Asks where to put a new SQLite database and creates it there as an empty
+	 *  file (an empty file is a valid empty database). Returns the path, or None
+	 *  when the dialog was cancelled. An existing file is never overwritten.
+	 */
+	createDatabaseFile: () => typedError<string | null, DbError_Serialize>(__TAURI_INVOKE("create_database_file")),
+	/**
 	 *  Opens a connection from unsaved form input, reads the server version and
 	 *  closes it again. `password` / `ssh_secret` answer a prompt for a one-off
 	 *  test and are never saved.

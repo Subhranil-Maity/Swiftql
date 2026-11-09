@@ -1,13 +1,13 @@
 [package]
 name = "driver-postgres"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 
 [dependencies]
 async-trait = "0.1.92"
 base64 = "0.23.1"
 chrono = "0.4.45"
-driver-core = { version = "1.0.0", path = "../driver-core" }
+driver-core = { version = "1.1.0", path = "../driver-core" }
 fallible-iterator = "0.2"
 futures = "0.3.34"
 postgres-protocol = "0.6.12"
@@ -16,7 +16,7 @@ rustls-native-certs = "0.8.5"
 rustls-pki-types = { version = "1.12", features = ["std"] }
 webpki-roots = "1"
 tokio-postgres-rustls = { version = "0.14.0", features = ["ring"] }
-ssh-tunnel = { version = "1.0.0", path = "../ssh-tunnel" }
+ssh-tunnel = { version = "1.1.0", path = "../ssh-tunnel" }
 dirs = "6"
 tracing = "0.1.44"
 serde_json = "1.0.154"

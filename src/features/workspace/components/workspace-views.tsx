@@ -5,6 +5,7 @@ import { colorVar } from "@/features/connections/model/colors";
 import { ConsoleView } from "@/features/console/components/console-view";
 import { NotificationsView } from "@/features/notifications/components/notifications-view";
 import { TablesView } from "@/features/tables/components/tables-view";
+import { useViewAvailable } from "@/features/workspace/model/available-views";
 import { useWorkspace } from "@/features/workspace/model/workspace-context";
 import { cn } from "@/lib/utils";
 import { type WorkspaceView, useWorkspaceView } from "@/stores/workspace-view";
@@ -29,7 +30,9 @@ function Loading() {
  */
 export function WorkspaceViews() {
   const workspace = useWorkspace();
-  const current = useWorkspaceView(workspace.connectionId);
+  const available = useViewAvailable(workspace.driverId);
+  const picked = useWorkspaceView(workspace.connectionId);
+  const current = available(picked) ? picked : "console";
   // Views opened at least once; updated during render so the new view mounts in the same pass.
   const [opened, setOpened] = useState<ReadonlySet<WorkspaceView>>(() => new Set([current]));
   if (!opened.has(current)) setOpened(new Set(opened).add(current));
@@ -70,7 +73,8 @@ export function WorkspaceViews() {
           <GraphView active={current === "graph"} />
         </Suspense>,
       )}
-      {pane("notifications", "Notifications", <NotificationsView active={current === "notifications"} />)}
+      {available("notifications") &&
+        pane("notifications", "Notifications", <NotificationsView active={current === "notifications"} />)}
     </div>
   );
 }

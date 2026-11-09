@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/sidebar";
 import { useNotificationsStore } from "@/features/notifications/stores/notifications";
 import { SidebarNavItem } from "@/features/workspace/components/sidebar-nav-item";
+import { useViewAvailable } from "@/features/workspace/model/available-views";
 import { useWorkspace } from "@/features/workspace/model/workspace-context";
 import { useNavigationStore } from "@/stores/navigation";
 import { type WorkspaceView, useWorkspaceView, useWorkspaceViewStore } from "@/stores/workspace-view";
@@ -34,10 +35,11 @@ const VIEWS: { view: WorkspaceView; label: string; icon: LucideIcon }[] = [
 /** Workspace navigation. Collapses to an icon rail (the header toggle or Ctrl+B). */
 export function AppSidebar() {
   const go = useNavigationStore((s) => s.go);
-  const { connectionId, sessionId } = useWorkspace();
+  const { connectionId, sessionId, driverId } = useWorkspace();
   const unread = useNotificationsStore((s) => s.bySession[sessionId]?.unread ?? 0);
   const current = useWorkspaceView(connectionId);
   const setView = useWorkspaceViewStore((s) => s.setView);
+  const available = useViewAvailable(driverId);
 
   return (
     <Sidebar collapsible="icon">
@@ -52,7 +54,7 @@ export function AppSidebar() {
         <SidebarGroup className="pt-0">
           <SidebarMenu aria-label="Views">
             {/* TODO: a query history view will join these */}
-            {VIEWS.map(({ view, label, icon }) => (
+            {VIEWS.filter(({ view }) => available(view)).map(({ view, label, icon }) => (
               <SidebarNavItem
                 key={view}
                 icon={icon}

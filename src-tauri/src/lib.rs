@@ -1,5 +1,6 @@
 mod config;
 mod connect;
+mod database_file;
 mod drivers;
 mod export;
 mod introspect;
@@ -39,6 +40,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             config::get_app_state,
             config::set_app_state,
             drivers::list_drivers,
+            database_file::create_database_file,
             connect::test_connection,
             connect::check_connection,
             connect::connect::<tauri::Wry>,
@@ -117,7 +119,7 @@ fn match_theme(app: &tauri::App, theme: config_store::settings::Theme) {
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let default = if cfg!(debug_assertions) {
-        "info,swiftql_lib=debug,driver_postgres=debug,config_store=debug,ssh_tunnel=debug"
+        "info,swiftql_lib=debug,driver_postgres=debug,driver_sqlite=debug,config_store=debug,ssh_tunnel=debug"
     } else {
         "info"
     };

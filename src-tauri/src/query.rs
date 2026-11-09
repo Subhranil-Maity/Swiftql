@@ -191,15 +191,16 @@ async fn prepare(session: &Session, query: &QuerySettings) {
         return;
     }
     let wanted = query.query_timeout_secs;
-    if session.applied_timeout.load(Ordering::SeqCst) != wanted {
-        let sql = format!("SET statement_timeout = {}", u64::from(wanted) * 1000);
-        match session.conn.execute(&sql).await {
+    if session.conn.capabilities().query_timeout
+        && session.applied_timeout.load(Ordering::SeqCst) != wanted
+    {
+        match session.conn.set_query_timeout(wanted).await {
             Ok(_) => session.applied_timeout.store(wanted, Ordering::SeqCst),
             Err(err) => {
                 session
                     .applied_timeout
                     .store(TIMEOUT_UNKNOWN, Ordering::SeqCst);
-                tracing::warn!(error = %err, "couldn't set statement_timeout");
+                tracing::warn!(error = %err, "couldn't set the query timeout");
             }
         }
     }
