@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "config-store"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "driver-core",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "driver-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "driver-postgres"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1254,6 +1254,19 @@ dependencies = [
  "tracing",
  "uuid",
  "webpki-roots",
+]
+
+[[package]]
+name = "driver-sqlite"
+version = "1.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "driver-core",
+ "rusqlite",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4905,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "ssh-tunnel"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "dirs 6.0.0",
  "glob",
@@ -5003,13 +5016,14 @@ dependencies = [
 
 [[package]]
 name = "swiftql"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "chrono",
  "config-store",
  "driver-core",
  "driver-postgres",
+ "driver-sqlite",
  "serde",
  "serde_json",
  "specta",

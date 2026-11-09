@@ -138,7 +138,7 @@ export function emptyForm(driver: DriverInfo): FormState {
     host: "localhost",
     port: "",
     // TODO: per-driver default database once DriverInfo has one, same as the port.
-    database: "postgres",
+    database: driver.id === "postgres" ? "postgres" : "",
     url: "",
     socketPath: "",
     filePath: "",

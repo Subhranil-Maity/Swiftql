@@ -27,6 +27,8 @@ export function AuthFields({ api, driver }: { api: ConnectionFormApi; driver: Dr
   const { form, errors, set } = api;
   const id = useId();
   const items = authKinds(driver).map((k) => ({ value: k, label: AUTH_LABELS[k] }));
+  // Nothing to choose or enter, e.g. SQLite files.
+  if (items.length === 1 && items[0].value === "none") return null;
 
   return (
     <div className="flex flex-col gap-4">

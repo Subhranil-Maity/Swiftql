@@ -131,6 +131,20 @@ and say what they need.
 
 ## After v1
 
+### SQLite (`crates/driver-sqlite`)
+
+- Table sizes (needs the `dbstat` virtual table) and row counts (`sqlite_stat1`
+  after ANALYZE); `size_bytes` / `row_estimate` are None for now.
+- Syntax checking in the console (`sql-lint.ts` has none for SQLite); statements
+  are split by a small scanner (`console/lib/sqlite-split.ts`), not a parser.
+- ATTACH / DETACH from the UI; attached databases already show as schemas.
+- Loadable extensions (`load_extension`), off for now.
+- SQLite looks up unqualified names in temp before main; the search path the
+  app reports lists main first (for completion), so a temp table that shadows
+  a main one isn't shown as such.
+- `WITH ... INSERT/UPDATE/DELETE` without RETURNING reports the command "WITH"
+  and no row count (`driver-sqlite/src/command.rs`).
+
 ### Console
 
 - Edit result cells / a per-table data tab with editing (needs

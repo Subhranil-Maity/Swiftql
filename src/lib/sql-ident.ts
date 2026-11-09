@@ -1,5 +1,7 @@
 // Identifiers in generated SQL. `quoteIdent` and `qualifiedName` match the
-// Postgres dialect in crates/driver-postgres/src/dialect.rs.
+// Postgres dialect in crates/driver-postgres/src/dialect.rs. SQLite reads
+// the same double-quoted form, and quoting more than it needs is harmless
+// there (its names ignore case either way).
 
 /** Always quoted: `my "col"` → `"my ""col"""`. */
 export function quoteIdent(name: string): string {

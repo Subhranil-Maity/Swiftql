@@ -33,6 +33,18 @@ pub trait Connection: Send + Sync {
         Vec::new()
     }
 
+    /// Stops statements that run longer than `secs` seconds; 0 turns the
+    /// limit off. A statement stopped this way fails with `ErrorKind::Timeout`
+    /// (or a code the app maps to it). Only called while no transaction is
+    /// open. Drivers without `Capabilities::query_timeout` return Unsupported.
+    async fn set_query_timeout(&self, secs: u32) -> DbResult<()> {
+        let _ = secs;
+        Err(DbError::new(
+            ErrorKind::Unsupported,
+            "this database has no query timeout",
+        ))
+    }
+
     /// Notifications this connection receives (after `listen`). Each call
     /// gives a new receiver; a slow one misses the oldest (`RecvError::Lagged`).
     /// None when the driver has no notifications (`Capabilities::listen_notify`).

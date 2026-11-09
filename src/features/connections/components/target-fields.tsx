@@ -12,7 +12,8 @@ import { defaultPort } from "@/lib/connection-format";
 import type { DriverInfo, TargetKind } from "@/lib/ipc";
 
 import type { ConnectionFormApi } from "../hooks/use-connection-form";
-import { FilePathInput } from "./file-path-input";
+import { FilePathInput, SQLITE_FILTERS } from "./file-path-input";
+import { NewDatabaseButton } from "./new-database-button";
 import { TARGET_LABELS, targetKinds } from "../model/form-state";
 
 /** Where the database is: host/port/database, a URL, a socket or a file. */
@@ -120,12 +121,20 @@ export function TargetFields({ api, driver }: { api: ConnectionFormApi; driver: 
       {form.method === "file" && (
         <Field data-invalid={!!errors.filePath}>
           <FieldLabel htmlFor={`${id}-file`}>Database file</FieldLabel>
-          <FilePathInput
-            id={`${id}-file`}
-            value={form.filePath}
-            onChange={(v) => set("filePath", v)}
-            invalid={!!errors.filePath}
-          />
+          <div className="flex gap-2">
+            <div className="min-w-0 flex-1">
+              <FilePathInput
+                id={`${id}-file`}
+                value={form.filePath}
+                onChange={(v) => set("filePath", v)}
+                placeholder={driver.id === "sqlite" ? "Path to a .db or .sqlite file" : undefined}
+                filters={driver.id === "sqlite" ? SQLITE_FILTERS : undefined}
+                invalid={!!errors.filePath}
+              />
+            </div>
+            {/* TODO: only SQLite creates its file this way; other file drivers need their own. */}
+            {driver.id === "sqlite" && <NewDatabaseButton onCreated={(path) => set("filePath", path)} />}
+          </div>
           <FieldError>{errors.filePath}</FieldError>
         </Field>
       )}

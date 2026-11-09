@@ -18,20 +18,30 @@ const KIND_LABEL: Record<TableKind, string> = {
   partitionedTable: "partitioned table",
 };
 
-/** Names Postgres would fold or reject unquoted get quotes when inserted. */
+/**
+ * How the database reads unquoted names. Postgres folds them to lower case
+ * (`foldsCase`), so a name with capitals needs quotes. SQLite compares names
+ * case-insensitively, quoted or not, so only odd characters need them.
+ */
+export type NameRules = { foldsCase: boolean };
+
+const POSTGRES_NAMES: NameRules = { foldsCase: true };
+
+/** Names the database would fold or reject unquoted get quotes when inserted. */
 // TODO: also quote reserved words used as names (a column called "user", "order")
-function insertText(name: string): string | undefined {
-  return /^[a-z_][a-z0-9_$]*$/.test(name) ? undefined : `"${name.replace(/"/g, '""')}"`;
+function insertText(name: string, rules: NameRules): string | undefined {
+  const bare = rules.foldsCase ? /^[a-z_][a-z0-9_$]*$/ : /^[A-Za-z_][A-Za-z0-9_$]*$/;
+  return bare.test(name) ? undefined : `"${name.replace(/"/g, '""')}"`;
 }
 
-function columnCompletion(column: Column, detail: string, boost = 0): Completion {
-  return { label: column.name, apply: insertText(column.name), type: "property", detail, boost };
+function columnCompletion(column: Column, detail: string, rules: NameRules, boost = 0): Completion {
+  return { label: column.name, apply: insertText(column.name, rules), type: "property", detail, boost };
 }
 
-function tableCompletion(table: Table): Completion {
+function tableCompletion(table: Table, rules: NameRules): Completion {
   return {
     label: table.name,
-    apply: insertText(table.name),
+    apply: insertText(table.name, rules),
     type: table.kind === "table" || table.kind === "partitionedTable" ? "class" : "interface",
     detail: KIND_LABEL[table.kind],
   };
@@ -41,18 +51,18 @@ function tableCompletion(table: Table): Completion {
 const key = (name: string) => name.replace(/\./g, "\\.");
 
 /** The catalog in lang-sql's shape: schema → table → columns. */
-export function catalogNamespace(catalog: Catalog): SQLNamespace {
+export function catalogNamespace(catalog: Catalog, rules: NameRules = POSTGRES_NAMES): SQLNamespace {
   const namespace: Record<string, SQLNamespace> = {};
   for (const schema of catalog.schemas) {
     const tables: Record<string, SQLNamespace> = {};
     for (const table of schema.tables ?? []) {
       tables[key(table.name)] = {
-        self: tableCompletion(table),
-        children: (table.columns ?? []).map((c) => columnCompletion(c, c.dataType)),
+        self: tableCompletion(table, rules),
+        children: (table.columns ?? []).map((c) => columnCompletion(c, c.dataType, rules)),
       };
     }
     namespace[key(schema.name)] = {
-      self: { label: schema.name, apply: insertText(schema.name), type: "namespace", detail: "schema" },
+      self: { label: schema.name, apply: insertText(schema.name, rules), type: "namespace", detail: "schema" },
       children: tables,
     };
   }
@@ -73,7 +83,7 @@ const ALIAS = new RegExp(String.raw`\s+(?:as\s+)?${NAME}`, "uy");
 const COMMA = /\s*,\s*/uy;
 const NOT_ALIAS = new Set(["where", "join", "on", "using", "set", "group", "order", "limit", "left", "right", "inner", "outer", "full", "cross", "natural", "lateral", "values", "select", "returning", "default", "union", "having", "window", "offset", "fetch", "for"]);
 
-/** Postgres folds unquoted names to lower case. */
+/** Postgres folds unquoted names to lower case (SQLite lookups ignore case anyway). */
 function unquote(name: string): string {
   return name.startsWith('"') ? name.slice(1, -1).replace(/""/g, '"') : name.toLowerCase();
 }
@@ -103,18 +113,26 @@ export function referencedTables(sql: string): string[][] {
   return refs;
 }
 
-function findTable(catalog: Catalog, ref: string[]): Table | undefined {
+function findTable(catalog: Catalog, ref: string[], rules: NameRules): Table | undefined {
+  const same = rules.foldsCase
+    ? (a: string, b: string) => a === b
+    : (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const [schemaName, tableName] = ref.length === 2 ? ref : [null, ref[0]];
   const schemas = schemaName ? [schemaName] : catalog.searchPath;
   for (const name of schemas) {
-    const table = catalog.schemas.find((s) => s.name === name)?.tables?.find((t) => t.name === tableName);
+    const table = catalog.schemas
+      .find((s) => same(s.name, name))
+      ?.tables?.find((t) => same(t.name, tableName));
     if (table) return table;
   }
   return undefined;
 }
 
 /** Columns of the tables the statement at the cursor uses, offered without a table prefix. */
-export function tableColumns(getCatalog: () => Catalog | undefined): CompletionSource {
+export function tableColumns(
+  getCatalog: () => Catalog | undefined,
+  rules: NameRules = POSTGRES_NAMES,
+): CompletionSource {
   return (context: CompletionContext): CompletionResult | null => {
     const catalog = getCatalog();
     if (!catalog) return null;
@@ -135,12 +153,12 @@ export function tableColumns(getCatalog: () => Catalog | undefined): CompletionS
     const options: Completion[] = [];
     const seen = new Set<Table>();
     for (const ref of referencedTables(sql)) {
-      const table = findTable(catalog, ref);
+      const table = findTable(catalog, ref, rules);
       if (!table || seen.has(table)) continue;
       seen.add(table);
       for (const column of table.columns ?? []) {
         // Ranked above keywords and table names that match as well.
-        options.push(columnCompletion(column, `${column.dataType} · ${table.name}`, 2));
+        options.push(columnCompletion(column, `${column.dataType} · ${table.name}`, rules, 2));
       }
     }
     return options.length ? { from, options, validFor: /^[\p{L}\p{N}_$]*$/u } : null;

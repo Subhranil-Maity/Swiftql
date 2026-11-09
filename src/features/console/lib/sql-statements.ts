@@ -1,6 +1,7 @@
 // Splits a script into the statements Ctrl+Enter and Run script send to the
 // server, one at a time.
 import { loadPgParser, type PgParser, pgParserIfLoaded } from "@/features/console/lib/pg-parser";
+import { sqliteSegments } from "@/features/console/lib/sqlite-split";
 import { utf8ToUtf16 } from "@/features/console/lib/text-offsets";
 
 /** A statement's place in the document, in UTF-16 offsets, without surrounding whitespace. */
@@ -72,6 +73,10 @@ export function splitStatementsSync(driverId: string, sql: string): StatementRan
       const pg = pgParserIfLoaded();
       return pg ? splitPostgres(pg, sql) : null;
     }
+    case "sqlite":
+      return sqliteSegments(sql)
+        .map((s) => trimmed(sql, s.from, s.to))
+        .filter((r): r is StatementRange => r !== null);
     default:
       // TODO: statement splitting for other drivers once they exist
       return whole(sql);

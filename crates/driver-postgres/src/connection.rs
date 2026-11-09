@@ -423,6 +423,12 @@ impl Connection for PgConnection {
         // Dropping the client sends Terminate; the connection task then ends by itself.
     }
 
+    async fn set_query_timeout(&self, secs: u32) -> DbResult<()> {
+        let millis = u64::from(secs) * 1000;
+        self.simple(&format!("SET statement_timeout = {millis}"))
+            .await
+    }
+
     fn take_notices(&self) -> Vec<Notice> {
         let mut queue = self.notices.lock().unwrap_or_else(|e| e.into_inner());
         queue.drain(..).collect()

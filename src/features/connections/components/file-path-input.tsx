@@ -12,6 +12,11 @@ export const PEM_FILTERS: FileFilter[] = [
   { name: "All files", extensions: ["*"] },
 ];
 
+export const SQLITE_FILTERS: FileFilter[] = [
+  { name: "SQLite database", extensions: ["db", "sqlite", "sqlite3", "db3"] },
+  { name: "All files", extensions: ["*"] },
+];
+
 /** A path typed or picked with the native "Open" dialog. */
 export function FilePathInput({
   id,
