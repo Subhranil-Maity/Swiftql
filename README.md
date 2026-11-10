@@ -48,10 +48,6 @@
 - Postgres-aware display of NULL, booleans, timestamps, intervals, arrays,
   ranges, JSON, `NaN` and `Infinity`.
 
-<p align="center">
-  <img src="docs/screenshots/results.png" alt="A large result being scrolled in the grid" width="900">
-</p>
-
 ### Tables and Graph
 
 - Browse schemas, tables and views with their columns, keys, indexes and row
@@ -83,13 +79,17 @@
 
 ### SQLite
 
-- Open any `.db` / `.sqlite` file, or create a new empty database from the
-  connection form. SQLite is built into the app, so there's nothing to install.
+- Pick SQLite when you add a connection, then open any `.db` / `.sqlite`
+  file, or create a new empty database from the connection form. SQLite is built into the app, so there's nothing to install.
 - Open a file read-only to look without changing anything.
 - The console, results grid, Tables view and ER diagram all work as they do
   for Postgres; attached databases show up as schemas.
 - Stop and the query timeout interrupt long queries, and foreign keys are
   enforced.
+
+<p align="center">
+  <img src="docs/screenshots/connection-driver.png" alt="Choosing PostgreSQL or SQLite for a new connection" width="700">
+</p>
 
 ### LISTEN / NOTIFY
 
@@ -98,10 +98,6 @@
 - Send a `NOTIFY` from the app. Listening uses its own connection, so a long
   query in the console never delays notifications.
 
-<p align="center">
-  <img src="docs/screenshots/notifications.png" alt="The Notifications view" width="900">
-</p>
-
 ### Settings
 
 Light and dark themes, UI font size and density, editor font and keyword case,
@@ -109,10 +105,6 @@ how NULLs, booleans and timestamps are shown, row and memory limits for
 results, query timeout, default SSL mode and SSH host-key policy. Search
 settings, reset one section or all of them, and open them anytime with
 `Ctrl+,`.
-
-<p align="center">
-  <img src="docs/screenshots/settings.png" alt="The Settings page" width="900">
-</p>
 
 ## Install
 

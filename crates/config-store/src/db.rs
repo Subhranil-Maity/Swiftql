@@ -70,7 +70,9 @@ impl Db {
     pub fn kv_get(&self, key: &str) -> ConfigResult<Option<Value>> {
         let json: Option<String> = self
             .lock()
-            .query_row("SELECT value_json FROM kv WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT value_json FROM kv WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(json.map(|j| serde_json::from_str(&j)).transpose()?)
     }

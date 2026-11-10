@@ -107,7 +107,9 @@ mod tests {
             .update(serde_json::json!({ "editor": { "fontSize": 15 } }))
             .unwrap();
         assert!(manager.paths().settings_file.exists());
-        manager.set_app_state("lastConnection", &"abc".into()).unwrap();
+        manager
+            .set_app_state("lastConnection", &"abc".into())
+            .unwrap();
         assert_eq!(
             manager.app_state("lastConnection").unwrap(),
             Some(Value::from("abc"))

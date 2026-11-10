@@ -42,7 +42,7 @@
     "targets": "all",
     "publisher": "Subhranil Maity",
     "shortDescription": "A fast desktop SQL client",
-    "longDescription": "SwiftQL is a desktop SQL client for PostgreSQL with a SQL console, schema browser, ER graph, TLS and SSH tunnels.",
+    "longDescription": "SwiftQL is a desktop SQL client for PostgreSQL and SQLite with a SQL console, schema browser, ER graph, TLS and SSH tunnels.",
     "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
